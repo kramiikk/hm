@@ -597,57 +597,46 @@ class BroadcastManager:
     async def _send_message(
         self, chat_id: int, msg: Message, topic_id: Optional[int] = None
     ) -> bool:
-        if not self.pause_event.is_set():
-            try:
-                await self.GLOBAL_LIMITER.acquire()
+        """Send a message with improved error handling and retry logic"""
+        if self.pause_event.is_set():
+            return False
+        try:
+            await self.GLOBAL_LIMITER.acquire()
 
-                forward_args = {
-                    "entity": chat_id,
-                    "messages": msg.id,
-                    "from_peer": msg.chat_id,
-                }
+            forward_args = {
+                "entity": chat_id,
+                "messages": msg.id,
+                "from_peer": msg.chat_id,
+            }
 
-                if topic_id is not None:
-                    forward_args["top_msg_id"] = topic_id
-                await self.client.forward_messages(**forward_args)
-                return True
-            except FloodWaitError as e:
-                await self._handle_flood_wait(e, chat_id)
-            except (BadRequestError, RPCError) as e:
-                if isinstance(e, BadRequestError) and e.code == 400:
-                    error_text = str(e)
-                    if "TOPIC_CLOSED" in error_text or "TOPIC_DELETED" in error_text:
-                        logger.error(
-                            f"Топик недоступен в чате {chat_id} (сообщение из топика {msg.top_msg_id})"
-                        )
-                        await self._handle_permanent_error(chat_id, msg.top_msg_id)
-                    else:
-                        logger.error(f"Ошибка в {chat_id}: {repr(e)}")
-                        if any(
-                            text in error_text
-                            for text in [
-                                "CHANNEL_PRIVATE",
-                                "USER_BANNED",
-                                "CHAT_WRITE_FORBIDDEN",
-                            ]
-                        ):
-                            await self._handle_permanent_error(chat_id)
+            if topic_id is not None:
+                forward_args["top_msg_id"] = topic_id
+            await self.client.forward_messages(**forward_args)
+            return True
+        except FloodWaitError as e:
+            await self._handle_flood_wait(e, chat_id)
+            return False
+        except (BadRequestError, RPCError) as e:
+            error_text = str(e).upper()
+
+            permanent_errors = [
+                "CHANNEL_PRIVATE",
+                "USER_BANNED",
+                "CHAT_WRITE_FORBIDDEN",
+                "TOPIC_CLOSED",
+                "TOPIC_DELETED",
+            ]
+
+            if any(err in error_text for err in permanent_errors):
+                if "TOPIC" in error_text:
+                    await self._handle_permanent_error(chat_id, topic_id)
                 else:
-                    logger.error(f"Ошибка в {chat_id}: {repr(e)}")
-            except Exception as e:
-                logger.error(f"Неожиданная ошибка в {chat_id}: {repr(e)}")
-                if any(
-                    error_text in str(e).upper()
-                    for error_text in [
-                        "BANNED",
-                        "RESTRICTED",
-                        "FORBIDDEN",
-                        "PRIVATE",
-                        "NOT_ACCESSIBLE",
-                    ]
-                ):
                     await self._handle_permanent_error(chat_id)
-        return False
+            logger.error(f"Error in chat {chat_id}: {repr(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error in chat {chat_id}: {repr(e)}")
+            return False
 
     def _toggle_watcher(self, args) -> str:
         """Переключение авто-добавления: .br w [on/off]"""
