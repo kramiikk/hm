@@ -288,13 +288,13 @@ class BroadcastManager:
 
     def _calculate_safe_interval(self, total_chats: int) -> Tuple[int, int]:
         if total_chats <= 2:
-            safe_min = 2
+            safe_min = 5
         elif total_chats >= 250:
             safe_min = 10
         else:
-            safe_min = 2 + (total_chats - 2) * 8 / 248
+            safe_min = 5 + (total_chats - 2) * 5 / 245
             safe_min = int(round(safe_min))
-        variance = max(2, int(safe_min * 0.2))
+        variance = max(1, int(safe_min * 0.2))
         safe_max = safe_min + variance
         safe_max = min(safe_max, 1440)
         return (safe_min, safe_max)
