@@ -6,6 +6,7 @@ import random
 import time
 from collections import deque, OrderedDict, defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
 from hikkatl.tl.types import Message
@@ -22,31 +23,25 @@ logger = logging.getLogger(__name__)
 
 
 class RateLimiter:
-    def __init__(self, max_requests: int, time_window: int):
-        self._lock = asyncio.Lock()
-        self.max_requests = max_requests
-        self.time_window = time_window
-        self.timestamps = deque(maxlen=max_requests * 2)
+    """Rate limiting implementation"""
+
+    def __init__(self):
+        self.tokens = 12
+        self.last_update = datetime.now()
+        self.lock = asyncio.Lock()
 
     async def acquire(self):
-        async with self._lock:
-            current_time = time.monotonic()
+        async with self.lock:
+            now = datetime.now()
 
-            while (
-                self.timestamps
-                and self.timestamps[0] <= current_time - self.time_window
-            ):
-                self.timestamps.popleft()
-            if len(self.timestamps) >= self.max_requests:
-                wait_time = self.timestamps[0] + self.time_window - current_time
-                await asyncio.sleep(wait_time)
-                current_time = time.monotonic()
-                while (
-                    self.timestamps
-                    and self.timestamps[0] <= current_time - self.time_window
-                ):
-                    self.timestamps.popleft()
-            self.timestamps.append(current_time)
+            time_passed = (now - self.last_update).total_seconds()
+            self.tokens = min(12, self.tokens + int(time_passed * 12 / 60))
+
+            if self.tokens <= 0:
+                await asyncio.sleep(8)
+                self.tokens = 1
+            self.tokens -= 1
+            self.last_update = now
 
 
 class SimpleCache:
@@ -206,8 +201,6 @@ class Broadcast:
 
 class BroadcastManager:
     """Manages broadcast operations and state."""
-
-    GLOBAL_LIMITER = RateLimiter(max_requests=12, time_window=60)
 
     def __init__(self, client: CustomTelegramClient, db, tg_id):
         self.client = client
@@ -484,25 +477,21 @@ class BroadcastManager:
     async def _handle_permanent_error(
         self, chat_id: int, topic_id: Optional[int] = None
     ):
-        """Handle permanent errors by removing affected chats/topics and logging the action"""
+        """Автоматическое удаление недоступных чатов"""
         async with self._lock:
             modified = False
-
-            for _, code in self.codes.items():
-                if chat_id not in code.chats:
-                    continue
-                if topic_id is not None:
-                    if topic_id in code.chats[chat_id]:
-                        code.chats[chat_id].discard(topic_id)
+            for code in self.codes.values():
+                if chat_id in code.chats:
+                    if topic_id:
+                        if topic_id in code.chats[chat_id]:
+                            code.chats[chat_id].discard(topic_id)
+                            modified = True
+                    else:
+                        del code.chats[chat_id]
                         modified = True
-
-                        if not code.chats[chat_id]:
-                            del code.chats[chat_id]
-                else:
-                    del code.chats[chat_id]
-                    modified = True
             if modified:
                 await self.save_config()
+                logger.info(f"Removed invalid chat {chat_id} (topic: {topic_id})")
 
     async def _handle_remove(self, message, code, code_name, args) -> str:
         """Удаление сообщения: .br r [code]"""
@@ -601,7 +590,7 @@ class BroadcastManager:
         if self.pause_event.is_set():
             return False
         try:
-            await self.GLOBAL_LIMITER.acquire()
+            await RateLimiter().acquire()
 
             forward_args = {
                 "entity": chat_id,
