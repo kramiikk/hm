@@ -614,6 +614,9 @@ class BroadcastManager:
                 "CHAT_WRITE_FORBIDDEN",
                 "TOPIC_CLOSED",
                 "TOPIC_DELETED",
+                "PEER_ID_INVALID",
+                "CHAT_SEND_PHOTOS_FORBIDDEN",
+                "CHAT_SEND_MEDIA_FORBIDDEN",
             ]
 
             if any(err in error_text for err in permanent_errors):
