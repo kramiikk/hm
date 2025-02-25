@@ -181,7 +181,7 @@ class BroadcastMod(loader.Module):
                             code.original_interval = code.interval
                         await self.manager.save_config()
                     except Exception as e:
-                        logger.error(f"Ошибка при обработке топика: {e}", exc_info=True)
+                        logger.error(f"Ошибка ватчера: {e}", exc_info=True)
 
 
 @dataclass
@@ -273,7 +273,6 @@ class BroadcastManager:
                     if elapsed < interval:
                         await asyncio.sleep(interval - elapsed)
                 except asyncio.CancelledError:
-                    logger.info(f"Broadcast {code_name} cancelled")
                     raise
                 except Exception as e:
                     logger.error(f"[{code_name}] Critical error: {e}")
@@ -443,7 +442,7 @@ class BroadcastManager:
                     f"🚨 Обнаружен FloodWait {e.seconds}s! Все рассылки приостановлены на {wait_time}s",
                 )
             )
-            logger.error(
+            logger.info(
                 f"🚨 FloodWait {e.seconds} сек. в чате {chat_id}. Среднее время ожидания: {avg_wait:.1f} сек. "
                 f"Всего FloodWait за последние 12 часов: {len(self.flood_wait_times)}"
             )
@@ -473,7 +472,9 @@ class BroadcastManager:
                     code.original_interval = code.interval
             await self.save_config()
 
-    async def _handle_permanent_error(self, chat_id: int, topic_id: Optional[int] = None):
+    async def _handle_permanent_error(
+        self, chat_id: int, topic_id: Optional[int] = None
+    ):
         """Автоматическое удаление недоступных чатов"""
         async with self._lock:
             logger.debug(f"Attempting to remove chat {chat_id} (topic: {topic_id})")
@@ -481,13 +482,17 @@ class BroadcastManager:
             for code_name, code in self.codes.items():
                 logger.debug(f"Checking code {code_name} for chat {chat_id}")
                 if chat_id in code.chats:
-                    logger.debug(f"Found chat {chat_id} in code {code_name}, topics: {code.chats[chat_id]}")
+                    logger.debug(
+                        f"Found chat {chat_id} in code {code_name}, topics: {code.chats[chat_id]}"
+                    )
                     if topic_id is not None:
                         logger.debug(f"Checking for topic {topic_id} in chat {chat_id}")
                         if topic_id in code.chats[chat_id]:
                             code.chats[chat_id].discard(topic_id)
                             modified = True
-                            logger.debug(f"Removed topic {topic_id} from chat {chat_id}")
+                            logger.debug(
+                                f"Removed topic {topic_id} from chat {chat_id}"
+                            )
 
                             if not code.chats[chat_id]:
                                 del code.chats[chat_id]
@@ -499,12 +504,13 @@ class BroadcastManager:
                     code.last_group_chats = defaultdict(set)
                 else:
                     logger.debug(f"Chat {chat_id} not found in code {code_name}")
-            
             if modified:
                 await self.save_config()
                 logger.info(f"Removed invalid chat {chat_id} (topic: {topic_id})")
             else:
-                logger.warning(f"Failed to remove chat {chat_id} (topic: {topic_id}), not found in any code")
+                logger.warning(
+                    f"Failed to remove chat {chat_id} (topic: {topic_id}), not found in any code"
+                )
 
     async def _handle_remove(self, message, code, code_name, args) -> str:
         """Удаление сообщения: .br r [code]"""
@@ -674,7 +680,6 @@ class BroadcastManager:
                             result = await handler(message, code, code_name, args)
                             response = result
                         except Exception as e:
-                            logger.error(f"Command error: {e}")
                             response = f"🚨 Ошибка: {str(e)}"
         await utils.answer(message, response)
 
