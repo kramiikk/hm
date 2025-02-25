@@ -4,8 +4,7 @@ import asyncio
 import logging
 import random
 import time
-import re
-from collections import deque, OrderedDict, defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
@@ -13,8 +12,7 @@ from typing import Dict, List, Optional, Set, Tuple
 from hikkatl.tl.types import Message
 from hikkatl.errors import (
     FloodWaitError,
-    RPCError,
-    BadRequestError,
+    SlowModeWaitError,
 )
 
 from .. import loader, utils
@@ -53,7 +51,7 @@ class SimpleCache:
         self.max_size = max_size
         self._lock = asyncio.Lock()
 
-    async def clean_expired(self, force: bool = False):
+    async def clean_expired(self):
         async with self._lock:
             current_time = time.time()
             expired = [
@@ -146,7 +144,7 @@ class BroadcastMod(loader.Module):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         if hasattr(self.manager, "_message_cache"):
-            await self.manager._message_cache.clean_expired(force=True)
+            await self.manager._message_cache.clean_expired()
 
     async def watcher(self, message):
         """Автоматическое добавление чата/топика при получении спец. сообщения"""
@@ -334,7 +332,7 @@ class BroadcastManager:
                 return None
             await self._message_cache.set(cache_key, msg, expire=3600)
             return msg
-        except (ValueError, RPCError) as e:
+        except Exception as e:
             logger.error(f"Ошибка получения: {e}")
             return None
 
@@ -478,24 +476,25 @@ class BroadcastManager:
     async def _handle_permanent_error(
         self, chat_id: int, topic_id: Optional[int] = None
     ):
-        """Автоматическое удаление недоступных чатов/топиков"""
+        """Автоматическое удаление недоступных чатов"""
         async with self._lock:
             modified = False
             for code in self.codes.values():
                 if chat_id in code.chats:
-                    if topic_id is not None:
+                    if topic_id:
                         if topic_id in code.chats[chat_id]:
                             code.chats[chat_id].discard(topic_id)
                             modified = True
+
                             if not code.chats[chat_id]:
                                 del code.chats[chat_id]
                     else:
                         del code.chats[chat_id]
                         modified = True
+                    code.last_group_chats = defaultdict(set)
             if modified:
                 await self.save_config()
-                logger.info(f"Удалён недоступный чат {chat_id} (топик: {topic_id})")
-                await self.client.get_entity(chat_id, exp=0)
+                logger.info(f"Removed invalid chat {chat_id} (topic: {topic_id})")
 
     async def _handle_remove(self, message, code, code_name, args) -> str:
         """Удаление сообщения: .br r [code]"""
@@ -609,34 +608,12 @@ class BroadcastManager:
         except FloodWaitError as e:
             await self._handle_flood_wait(e, chat_id)
             return False
-        except (BadRequestError, RPCError) as e:
-            error_msg = str(e).strip().upper()
-            error_code = (
-                re.search(r"([A-Z_]+)(\s|$)", error_msg).group(1)
-                if " " in error_msg
-                else error_msg.split(":")[0]
-            )
-
-            permanent_errors = {
-                "CHANNEL_PRIVATE",
-                "USER_BANNED",
-                "CHAT_WRITE_FORBIDDEN",
-                "TOPIC_CLOSED",
-                "TOPIC_DELETED",
-                "PEER_ID_INVALID",
-                "CHAT_SEND_PHOTOS_FORBIDDEN",
-                "CHAT_SEND_MEDIA_FORBIDDEN",
-            }
-
-            if error_code in permanent_errors:
-                if "TOPIC" in error_code:
-                    await self._handle_permanent_error(chat_id, topic_id)
-                else:
-                    await self._handle_permanent_error(chat_id)
-            logger.error(f"Error in chat {chat_id}: {repr(e)}")
+        except SlowModeWaitError as e:
+            logger.error(f"SlowMode error in chat {chat_id}: {repr(e)}")
             return False
         except Exception as e:
             logger.error(f"Unexpected error in chat {chat_id}: {repr(e)}")
+            await self._handle_permanent_error(chat_id, topic_id)
             return False
 
     def _toggle_watcher(self, args) -> str:
@@ -746,7 +723,7 @@ class BroadcastManager:
                         name: {
                             "chats": {
                                 str(chat_id): list(topic_ids)
-                                for chat_id, topic_ids in code.chats.items()
+                                for chat_id, topic_ids in dict(code.chats).items()
                             },
                             "messages": [
                                 {"chat_id": cid, "message_id": mid}
