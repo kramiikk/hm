@@ -473,28 +473,38 @@ class BroadcastManager:
                     code.original_interval = code.interval
             await self.save_config()
 
-    async def _handle_permanent_error(
-        self, chat_id: int, topic_id: Optional[int] = None
-    ):
+    async def _handle_permanent_error(self, chat_id: int, topic_id: Optional[int] = None):
         """Автоматическое удаление недоступных чатов"""
         async with self._lock:
+            logger.debug(f"Attempting to remove chat {chat_id} (topic: {topic_id})")
             modified = False
-            for code in self.codes.values():
+            for code_name, code in self.codes.items():
+                logger.debug(f"Checking code {code_name} for chat {chat_id}")
                 if chat_id in code.chats:
-                    if topic_id:
+                    logger.debug(f"Found chat {chat_id} in code {code_name}, topics: {code.chats[chat_id]}")
+                    if topic_id is not None:
+                        logger.debug(f"Checking for topic {topic_id} in chat {chat_id}")
                         if topic_id in code.chats[chat_id]:
                             code.chats[chat_id].discard(topic_id)
                             modified = True
+                            logger.debug(f"Removed topic {topic_id} from chat {chat_id}")
 
                             if not code.chats[chat_id]:
                                 del code.chats[chat_id]
+                                logger.debug(f"Removed empty chat {chat_id}")
                     else:
                         del code.chats[chat_id]
                         modified = True
+                        logger.debug(f"Removed entire chat {chat_id}")
                     code.last_group_chats = defaultdict(set)
+                else:
+                    logger.debug(f"Chat {chat_id} not found in code {code_name}")
+            
             if modified:
                 await self.save_config()
                 logger.info(f"Removed invalid chat {chat_id} (topic: {topic_id})")
+            else:
+                logger.warning(f"Failed to remove chat {chat_id} (topic: {topic_id}), not found in any code")
 
     async def _handle_remove(self, message, code, code_name, args) -> str:
         """Удаление сообщения: .br r [code]"""
