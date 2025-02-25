@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import time
+import re
 from collections import deque, OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -477,21 +478,24 @@ class BroadcastManager:
     async def _handle_permanent_error(
         self, chat_id: int, topic_id: Optional[int] = None
     ):
-        """Автоматическое удаление недоступных чатов"""
+        """Автоматическое удаление недоступных чатов/топиков"""
         async with self._lock:
             modified = False
             for code in self.codes.values():
                 if chat_id in code.chats:
-                    if topic_id:
+                    if topic_id is not None:
                         if topic_id in code.chats[chat_id]:
                             code.chats[chat_id].discard(topic_id)
                             modified = True
+                            if not code.chats[chat_id]:
+                                del code.chats[chat_id]
                     else:
                         del code.chats[chat_id]
                         modified = True
             if modified:
                 await self.save_config()
-                logger.info(f"Removed invalid chat {chat_id} (topic: {topic_id})")
+                logger.info(f"Удалён недоступный чат {chat_id} (топик: {topic_id})")
+                await self.client.get_entity(chat_id, exp=0)
 
     async def _handle_remove(self, message, code, code_name, args) -> str:
         """Удаление сообщения: .br r [code]"""
@@ -606,9 +610,14 @@ class BroadcastManager:
             await self._handle_flood_wait(e, chat_id)
             return False
         except (BadRequestError, RPCError) as e:
-            error_text = str(e).upper()
+            error_msg = str(e).strip().upper()
+            error_code = (
+                re.search(r"([A-Z_]+)(\s|$)", error_msg).group(1)
+                if " " in error_msg
+                else error_msg.split(":")[0]
+            )
 
-            permanent_errors = [
+            permanent_errors = {
                 "CHANNEL_PRIVATE",
                 "USER_BANNED",
                 "CHAT_WRITE_FORBIDDEN",
@@ -617,10 +626,10 @@ class BroadcastManager:
                 "PEER_ID_INVALID",
                 "CHAT_SEND_PHOTOS_FORBIDDEN",
                 "CHAT_SEND_MEDIA_FORBIDDEN",
-            ]
+            }
 
-            if any(err in error_text for err in permanent_errors):
-                if "TOPIC" in error_text:
+            if error_code in permanent_errors:
+                if "TOPIC" in error_code:
                     await self._handle_permanent_error(chat_id, topic_id)
                 else:
                     await self._handle_permanent_error(chat_id)
@@ -737,7 +746,7 @@ class BroadcastManager:
                         name: {
                             "chats": {
                                 str(chat_id): list(topic_ids)
-                                for chat_id, topic_ids in dict(code.chats).items()
+                                for chat_id, topic_ids in code.chats.items()
                             },
                             "messages": [
                                 {"chat_id": cid, "message_id": mid}
