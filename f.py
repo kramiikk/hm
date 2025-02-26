@@ -25,18 +25,18 @@ class RateLimiter:
     """Rate limiting implementation"""
 
     def __init__(self):
-        self.tokens = 12
+        self.tokens = 5
         self.last_update = datetime.now()
 
     async def acquire(self):
         now = datetime.now()
 
         time_passed = (now - self.last_update).total_seconds()
-        self.tokens = min(12, self.tokens + int(time_passed * 12 / 60))
+        self.tokens = min(5, self.tokens + int(time_passed * 5 / 60))
 
         if self.tokens <= 0:
-            await asyncio.sleep(8)
-            self.tokens = 1
+            wait_time = 15 + random.uniform(3, 7)
+            await asyncio.sleep(wait_time)
         self.tokens -= 1
         self.last_update = now
 
@@ -203,6 +203,7 @@ class BroadcastManager:
         self.codes: Dict[str, Broadcast] = {}
         self.broadcast_tasks: Dict[str, asyncio.Task] = {}
         self._message_cache = SimpleCache(ttl=7200, max_size=12)
+        self.global_backoff_multiplier = 1.0
         self.pause_event = asyncio.Event()
         self.cache_cleanup_task = None
         self.watcher_enabled = False
@@ -233,7 +234,13 @@ class BroadcastManager:
                     code.groups = [chats[i : i + 12] for i in range(0, len(chats), 12)]
                     code.last_group_chats = current_chats
                 total_groups = len(code.groups)
-                interval = random.uniform(code.interval[0], code.interval[1]) * 60
+                interval = (
+                    random.uniform(
+                        code.interval[0] * self.global_backoff_multiplier,
+                        code.interval[1] * self.global_backoff_multiplier,
+                    )
+                    * 60
+                )
 
                 if total_groups > 1:
                     pause_between = (interval - total_groups * 0.2) / (total_groups - 1)
@@ -255,7 +262,9 @@ class BroadcastManager:
                     await asyncio.gather(*tasks)
 
                     if idx < total_groups - 1:
-                        await asyncio.sleep(max(60, pause_between))
+                        await asyncio.sleep(
+                            max(60, pause_between) + random.uniform(15, 30)
+                        )
                 elapsed = time.monotonic() - start_time
                 if elapsed < interval:
                     await asyncio.sleep(interval - elapsed)
@@ -287,7 +296,7 @@ class BroadcastManager:
                 code.interval = code.original_interval
             self.flood_wait_times = []
             await self.client.dispatcher.safe_api_call(
-                await self.client.send_message(
+                self.client.send_message(
                     self.tg_id,
                     "🔄 12 часов без ошибок! Интервалы восстановлены до исходных",
                 )
@@ -298,7 +307,7 @@ class BroadcastManager:
                 new_max = max(min(int(code.interval[1] * 0.85), 1440), new_min + 2)
                 code.interval = (new_min, new_max)
                 await self.client.dispatcher.safe_api_call(
-                    await self.client.send_message(
+                    self.client.send_message(
                         self.tg_id,
                         f"⏱ Автокоррекция интервалов для {code_name}: {new_min}-{new_max} минут",
                     )
@@ -420,9 +429,10 @@ class BroadcastManager:
 
         self.flood_wait_times.append(wait_time)
         if len(self.flood_wait_times) > 10:
+            self.global_backoff_multiplier *= 1.5
             self.flood_wait_times = self.flood_wait_times[-10:]
         await self.client.dispatcher.safe_api_call(
-            await self.client.send_message(
+            self.client.send_message(
                 self.tg_id,
                 f"🚨 Обнаружен FloodWait {e.seconds}s! Все рассылки приостановлены на {wait_time}s",
             )
@@ -442,7 +452,7 @@ class BroadcastManager:
         self.pause_event.clear()
         await self._restart_all_broadcasts()
         await self.client.dispatcher.safe_api_call(
-            await self.client.send_message(
+            self.client.send_message(
                 self.tg_id,
                 "🐈 Глобальная пауза снята. Рассылки возобновлены",
             )
@@ -583,7 +593,7 @@ class BroadcastManager:
                 "from_peer": msg.chat_id,
             }
 
-            if topic_id is not None:
+            if topic_id is not None and topic_id != 0:
                 forward_args["top_msg_id"] = topic_id
             await self.client.forward_messages(**forward_args)
             return True
