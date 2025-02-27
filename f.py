@@ -430,14 +430,21 @@ class BroadcastManager:
             f"Всего FloodWait за последние 12 часов: {len(self.flood_wait_times)}"
         )
 
-        tasks = list(self.broadcast_tasks.values())
+        tasks_to_cancel = list(self.broadcast_tasks.values())
         self.broadcast_tasks.clear()
 
-        for task in tasks:
+        for task in tasks_to_cancel:
             if not task.done():
                 task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if tasks_to_cancel:
+            for task in tasks_to_cancel:
+                try:
+                    if not task.done():
+                        await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+                except Exception as ex:
+                    logger.error(f"Error during task cancellation: {ex}")
         await asyncio.sleep(wait_time)
 
         await self.client.get_perms_cached(chat_id, self.tg_id, force=True)
@@ -560,8 +567,8 @@ class BroadcastManager:
                     if not task.done() and not task.cancelled():
                         task.cancel()
                         try:
-                            await task
-                        except asyncio.CancelledError:
+                            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
                             pass
                         except Exception as e:
                             logger.error(f"Ошибка задачи {code_name}: {e}")
