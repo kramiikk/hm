@@ -295,23 +295,11 @@ class BroadcastManager:
             for code in self.codes.values():
                 code.interval = code.original_interval
             self.flood_wait_times = []
-            await self.client.dispatcher.safe_api_call(
-                self.client.send_message(
-                    self.tg_id,
-                    "🔄 12 часов без ошибок! Интервалы восстановлены до исходных",
-                )
-            )
         else:
             for code_name, code in self.codes.items():
                 new_min = max(2, int(code.interval[0] * 0.85))
                 new_max = max(min(int(code.interval[1] * 0.85), 1440), new_min + 2)
                 code.interval = (new_min, new_max)
-                await self.client.dispatcher.safe_api_call(
-                    self.client.send_message(
-                        self.tg_id,
-                        f"⏱ Автокоррекция интервалов для {code_name}: {new_min}-{new_max} минут",
-                    )
-                )
         await self.save_config()
 
     async def _fetch_message(self, chat_id: int, message_id: int):
@@ -443,9 +431,13 @@ class BroadcastManager:
         )
 
         tasks = list(self.broadcast_tasks.values())
+        self.broadcast_tasks.clear()
+
         for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.sleep(wait_time)
 
         await self.client.get_perms_cached(chat_id, self.tg_id, force=True)
