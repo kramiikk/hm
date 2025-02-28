@@ -20,6 +20,11 @@ from ..tl_cache import CustomTelegramClient
 
 logger = logging.getLogger(__name__)
 
+LOG_TEMPLATE = (
+    "✉️ [%s] Отправлено %d сообщений за %.2f сек. Следующий цикл через %.2f мин."
+)
+ERROR_TEMPLATE = "⚠️ [%s] Ошибка: %s"
+
 
 class RateLimiter:
     """Rate limiting implementation"""
@@ -119,6 +124,9 @@ class BroadcastMod(loader.Module):
                 self.manager.broadcast_tasks[code_name] = asyncio.create_task(
                     self.manager._broadcast_loop(code_name)
                 )
+        logger.info(
+            "BroadcastMod загружен. Восстановлено рассылок: %d", len(self.manager.codes)
+        )
 
     async def on_unload(self):
         if not hasattr(self, "manager"):
@@ -268,10 +276,17 @@ class BroadcastManager:
                 elapsed = time.monotonic() - start_time
                 if elapsed < interval:
                     await asyncio.sleep(interval - elapsed)
+                logger.info(
+                    LOG_TEMPLATE,
+                    code_name,
+                    len(group),
+                    elapsed,
+                    interval / 60,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(f"[{code_name}] Critical error: {e}")
+                logger.error(ERROR_TEMPLATE, code_name, str(e), exc_info=True)
 
     def _calculate_safe_interval(self, total_chats: int) -> Tuple[int, int]:
         if total_chats <= 2:
@@ -288,7 +303,7 @@ class BroadcastManager:
 
     async def _check_and_adjust_intervals(self):
         """Проверка условий для восстановления интервалов"""
-        if not self.flood_wait_times:
+        if not self.flood_wait_times or self.last_flood_time == 0:
             return
         time_since_last_flood = time.time() - self.last_flood_time
         if time_since_last_flood > 43200:
@@ -296,11 +311,15 @@ class BroadcastManager:
                 code.interval = code.original_interval
             self.flood_wait_times = []
         else:
-            for code_name, code in self.codes.items():
+            for code in self.codes.values():
                 new_min = max(2, int(code.interval[0] * 0.85))
                 new_max = max(min(int(code.interval[1] * 0.85), 1440), new_min + 2)
                 code.interval = (new_min, new_max)
         await self.save_config()
+        logger.debug(
+            "🔄 Проверка интервалов. С момента последнего FloodWait: %.1f часов",
+            time_since_last_flood / 3600,
+        )
 
     async def _fetch_message(self, chat_id: int, message_id: int):
         cache_key = (chat_id, message_id)
@@ -368,6 +387,9 @@ class BroadcastManager:
         code.chats[chat_id].add(topic_id or 0)
 
         await self.save_config()
+        logger.info(
+            "➕ [%s] Добавлен чат %s (топик %s)", code_name, chat_id, topic_id or "нет"
+        )
         return f"🪴 +1 {'топик' if topic_id else 'чат'} | Всего: {sum(len(v) for v in code.chats.values())}"
 
     async def _handle_delete(self, message, code, code_name, args) -> str:
@@ -416,6 +438,12 @@ class BroadcastManager:
         wait_time = min(max(e.seconds + 12, avg_wait * 1.2), 7200)
 
         self.flood_wait_times.append(wait_time)
+        logger.warning(
+            "⏳ FloodWait %d сек. (чат %d). Глобальная пауза %.1f мин.",
+            e.seconds,
+            chat_id,
+            wait_time / 60,
+        )
         if len(self.flood_wait_times) > 10:
             self.global_backoff_multiplier *= 1.5
             self.flood_wait_times = self.flood_wait_times[-10:]
@@ -486,7 +514,7 @@ class BroadcastManager:
                 code.last_group_chats = defaultdict(set)
         if modified:
             await self.save_config()
-            logger.info(f"Removed invalid chat {chat_id} (topic: {topic_id})")
+            logger.info("Removed invalid chat %d (topic: %s)", chat_id, topic_id)
         else:
             logger.warning(
                 f"Failed to remove chat {chat_id} (topic: {topic_id}), not found in any code"
@@ -518,6 +546,7 @@ class BroadcastManager:
             return "ℹ️ Чат не найден"
         del code.chats[chat_id]
         await self.save_config()
+        logger.info("➖ [%s] Удален чат %s", code_name, chat_id)
         return f"🐲 -1 чат | Осталось: {sum(len(v) for v in code.chats.values())}"
 
     async def _handle_start(self, message, code, code_name, args) -> str:
@@ -534,6 +563,13 @@ class BroadcastManager:
         )
 
         await self.save_config()
+        logger.info(
+            "🚀 [%s] Старт рассылки | Чаты: %d | Сообщения: %d | Интервал: %d-%d мин",
+            code_name,
+            len(code.chats),
+            len(code.messages),
+            *code.interval,
+        )
 
         return f"🚀 {code_name} запущена | Чатов: {len(code.chats)}"
 
@@ -545,6 +581,7 @@ class BroadcastManager:
         if code_name in self.broadcast_tasks:
             self.broadcast_tasks[code_name].cancel()
         await self.save_config()
+        logger.info("⏹ [%s] Ручная остановка", code_name)
 
         return f"🧊 {code_name} остановлена"
 
@@ -579,7 +616,8 @@ class BroadcastManager:
                 self.broadcast_tasks[code_name] = asyncio.create_task(
                     self._broadcast_loop(code_name)
                 )
-                logger.info(f"Перезапуск рассылки: {code_name}")
+                active = sum(1 for code in self.codes.values() if code._active)
+                logger.info("🔁 Перезапуск всех рассылок (%d активных)", active)
 
     async def _send_message(
         self, chat_id: int, msg: Message, topic_id: Optional[int] = None
@@ -599,12 +637,17 @@ class BroadcastManager:
             if topic_id is not None and topic_id != 0:
                 forward_args["top_msg_id"] = topic_id
             await self.client.forward_messages(**forward_args)
+            logger.debug(
+                "✅ [%s->%s] Сообщение отправлено",
+                msg.chat_id,
+                f"{chat_id}:{topic_id}" if topic_id else chat_id,
+            )
             return True
         except FloodWaitError as e:
             await self._handle_flood_wait(e, chat_id)
             return False
         except SlowModeWaitError as e:
-            logger.error(f"SlowMode error in chat {chat_id}: {repr(e)}")
+            logger.warning("⌛ [%d] SlowModeWait %d сек.", chat_id, e.seconds)
             return False
         except Exception as e:
             logger.error(f"Unexpected error in chat {chat_id}: {repr(e)}")
@@ -702,7 +745,7 @@ class BroadcastManager:
                     continue
             for code_name, code in self.codes.items():
                 if code._active and (not code.messages or not code.chats):
-                    logger.info(f"Отключение {code_name}: нет сообщений/чатов")
+                    logger.info("Отключение %s: нет сообщений/чатов", code_name)
                     code._active = False
         except Exception as e:
             logger.error(f"Критическая ошибка загрузки: {str(e)}", exc_info=True)
@@ -739,6 +782,9 @@ class BroadcastManager:
             }
             try:
                 self.db.set("broadcast", "config", config)
+                logger.debug(
+                    "💾 Сохранение конфигурации (%d рассылок)", len(self.codes)
+                )
             except Exception as e:
                 logger.error(f"Database error during save: {e}")
                 raise
