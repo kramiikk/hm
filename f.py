@@ -447,7 +447,11 @@ class BroadcastManager:
                     logger.error(f"Error during task cancellation: {ex}")
         await asyncio.sleep(wait_time)
 
-        await self.client.get_perms_cached(chat_id, self.tg_id, force=True)
+        try:
+            await self.client.get_entity(chat_id)
+            await asyncio.sleep(random.randint(1000, 3000) / 1000)
+        except Exception as e:
+            logger.warning(f"Failed to get entity for chat {chat_id}: {e}")
         self.pause_event.clear()
         await self._restart_all_broadcasts()
         await self.client.dispatcher.safe_api_call(
