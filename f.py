@@ -620,7 +620,6 @@ class BroadcastManager:
                 "entity": chat_id,
                 "messages": msg.id,
                 "from_peer": msg.chat_id,
-                "drop_author": True,
             }
 
             if topic_id is not None and topic_id != 0:
