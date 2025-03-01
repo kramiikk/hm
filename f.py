@@ -20,11 +20,6 @@ from ..tl_cache import CustomTelegramClient
 
 logger = logging.getLogger(__name__)
 
-LOG_TEMPLATE = (
-    "✉️ [%s] Отправлено %d сообщений за %.2f сек. Следующий цикл через %.2f мин."
-)
-ERROR_TEMPLATE = "⚠️ [%s] Ошибка: %s"
-
 
 class RateLimiter:
     """Rate limiting implementation"""
@@ -276,17 +271,10 @@ class BroadcastManager:
                 elapsed = time.monotonic() - start_time
                 if elapsed < interval:
                     await asyncio.sleep(interval - elapsed)
-                logger.info(
-                    LOG_TEMPLATE,
-                    code_name,
-                    len(group),
-                    elapsed,
-                    interval / 60,
-                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.error(ERROR_TEMPLATE, code_name, str(e), exc_info=True)
+                logger.error("⚠️ [%s] Ошибка: %s", code_name, str(e), exc_info=True)
 
     def _calculate_safe_interval(self, total_chats: int) -> Tuple[int, int]:
         if total_chats <= 2:
