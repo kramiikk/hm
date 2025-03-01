@@ -626,7 +626,7 @@ class BroadcastManager:
                 forward_args["top_msg_id"] = topic_id
             await self.client.forward_messages(**forward_args)
             logger.debug(
-                "✅ [%s->%s] Сообщение отправлено",
+                "✅ [%s->%s] Сообщение переслано",
                 msg.chat_id,
                 f"{chat_id}:{topic_id}" if topic_id else chat_id,
             )
@@ -638,9 +638,36 @@ class BroadcastManager:
             logger.warning("⌛ [%d] SlowModeWait %d сек.", chat_id, e.seconds)
             return False
         except Exception as e:
-            logger.error(f"Unexpected error in chat {chat_id}: {repr(e)}")
-            await self._handle_permanent_error(chat_id, topic_id)
-            return False
+            if "can't forward" in str(e).lower():
+                try:
+                    send_args = {"entity": chat_id}
+                    if topic_id not in (None, 0):
+                        send_args["reply_to"] = topic_id
+                    if msg.media:
+                        await self.client.send_file(
+                            file=msg.media,
+                            caption=msg.text or None,
+                            **send_args,
+                        )
+                    else:
+                        await self.client.send_message(
+                            message=msg.text,
+                            **send_args,
+                        )
+                    logger.debug(
+                        "✅ [%s->%s] Сообщение отправлено",
+                        msg.chat_id,
+                        f"{chat_id}:{topic_id}" if topic_id else chat_id,
+                    )
+                    return True
+                except Exception as send_error:
+                    logger.error(f"Ошибка отправки: {repr(send_error)}")
+                    await self._handle_permanent_error(chat_id, topic_id)
+                    return False
+            else:
+                logger.error(f"Unexpected error in chat {chat_id}: {repr(e)}")
+                await self._handle_permanent_error(chat_id, topic_id)
+                return False
 
     def _toggle_watcher(self, args) -> str:
         """Переключение авто-добавления: .br w [on/off]"""
