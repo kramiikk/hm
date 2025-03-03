@@ -42,7 +42,7 @@ class RateLimiter:
 
 
 class SimpleCache:
-    def __init__(self, ttl: int = 7200, max_size: int = 12):
+    def __init__(self, ttl: int = 7200, max_size: int = 5):
         self._active = True
         self.cache = OrderedDict()
         self.ttl = ttl
@@ -162,8 +162,8 @@ class BroadcastMod(loader.Module):
 
                 if code and sum(len(v) for v in code.chats.values()) < 250:
                     try:
+                        await asyncio.sleep(random.uniform(1.5, 5.5))
                         await self.client.get_entity(chat_id)
-                        await asyncio.sleep(random.randint(1000, 3000) / 1000)
 
                         topic_id = utils.get_topic(message) or 0
 
@@ -205,9 +205,10 @@ class BroadcastManager:
         self.adaptive_interval_task = None
         self.codes: Dict[str, Broadcast] = {}
         self.broadcast_tasks: Dict[str, asyncio.Task] = {}
-        self._message_cache = SimpleCache(ttl=7200, max_size=12)
+        self._message_cache = SimpleCache(ttl=7200, max_size=5)
         self.global_backoff_multiplier = 1.0
         self.pause_event = asyncio.Event()
+        self.rate_limiter = RateLimiter()
         self.cache_cleanup_task = None
         self.watcher_enabled = False
         self.pause_event.clear()
@@ -234,7 +235,7 @@ class BroadcastManager:
                         for topic_id in topic_ids
                     ]
                     random.shuffle(chats)
-                    code.groups = [chats[i : i + 12] for i in range(0, len(chats), 12)]
+                    code.groups = [chats[i : i + 5] for i in range(0, len(chats), 5)]
                     code.last_group_chats = current_chats
                 total_groups = len(code.groups)
                 interval = (
@@ -315,8 +316,8 @@ class BroadcastManager:
         if cached := await self._message_cache.get(cache_key):
             return cached
         try:
+            await asyncio.sleep(random.uniform(1.5, 5.5))
             msg = await self.client.get_messages(entity=chat_id, ids=message_id)
-            await asyncio.sleep(random.randint(1000, 3000) / 1000)
             if not msg:
                 return None
             await self._message_cache.set(cache_key, msg, expire=3600)
@@ -368,8 +369,8 @@ class BroadcastManager:
             return "🫵 Неверный формат чата"
         try:
             if topic_id:
+                await asyncio.sleep(random.uniform(1.5, 5.5))
                 await self.client.get_messages(chat_id, ids=topic_id)
-                await asyncio.sleep(random.randint(1000, 3000) / 1000)
         except Exception:
             return "🫵 Топик не существует или недоступен"
         code.chats[chat_id].add(topic_id or 0)
@@ -423,7 +424,7 @@ class BroadcastManager:
             if self.flood_wait_times
             else 0
         )
-        wait_time = min(max(e.seconds + 12, avg_wait * 1.2), 7200)
+        wait_time = min(max(e.seconds + 5, avg_wait * 1.5), 7200)
 
         self.flood_wait_times.append(wait_time)
         logger.warning(
@@ -435,11 +436,9 @@ class BroadcastManager:
         if len(self.flood_wait_times) > 10:
             self.global_backoff_multiplier *= 1.5
             self.flood_wait_times = self.flood_wait_times[-10:]
-        await self.client.dispatcher.safe_api_call(
-            self.client.send_message(
-                self.tg_id,
-                f"🚨 Обнаружен FloodWait {e.seconds}s! Все рассылки приостановлены на {wait_time}s",
-            )
+        await self.client.send_message(
+            self.tg_id,
+            f"🚨 Обнаружен FloodWait {e.seconds}s! Все рассылки приостановлены на {wait_time}s",
         )
         logger.info(
             f"🚨 FloodWait {e.seconds} сек. в чате {chat_id}. Среднее время ожидания: {avg_wait:.1f} сек. "
@@ -464,17 +463,15 @@ class BroadcastManager:
         await asyncio.sleep(wait_time)
 
         try:
+            await asyncio.sleep(random.uniform(1.5, 5.5))
             await self.client.get_entity(chat_id)
-            await asyncio.sleep(random.randint(1000, 3000) / 1000)
         except Exception as e:
             logger.warning(f"Failed to get entity for chat {chat_id}: {e}")
         self.pause_event.clear()
         await self._restart_all_broadcasts()
-        await self.client.dispatcher.safe_api_call(
-            self.client.send_message(
-                self.tg_id,
-                "🐈 Глобальная пауза снята. Рассылки возобновлены",
-            )
+        await self.client.send_message(
+            self.tg_id,
+            "🐈 Глобальная пауза снята. Рассылки возобновлены",
         )
 
         for code in self.codes.values():
@@ -583,8 +580,8 @@ class BroadcastManager:
                     identifier = parts[-1]
                 if identifier.lstrip("-").isdigit():
                     return int(identifier)
+            await asyncio.sleep(random.uniform(1.5, 5.5))
             entity = await self.client.get_entity(identifier, exp=3600)
-            await asyncio.sleep(random.randint(1000, 3000) / 1000)
             return entity.id
         except Exception:
             return None
@@ -614,7 +611,8 @@ class BroadcastManager:
         if self.pause_event.is_set():
             return False
         try:
-            await RateLimiter().acquire()
+            await self.rate_limiter.acquire()
+            await asyncio.sleep(random.uniform(1.5, 5.5))
 
             send_args = {"entity": chat_id}
             if topic_id not in (None, 0):
