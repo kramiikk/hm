@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
-from hikkatl.tl.types import Message
+from hikkatl.tl.types import Message, MessageMediaWebPage
 from hikkatl.errors import (
     FloodWaitError,
     SlowModeWaitError,
@@ -617,7 +617,7 @@ class BroadcastManager:
             send_args = {"entity": chat_id}
             if topic_id not in (None, 0):
                 send_args["reply_to"] = topic_id
-            if msg.media:
+            if msg.media and not isinstance(msg.media, MessageMediaWebPage):
                 await self.client.send_file(
                     file=msg.media,
                     caption=msg.text or None,
