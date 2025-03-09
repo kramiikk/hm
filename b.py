@@ -12,9 +12,6 @@ from typing import Dict, List, Optional, Set, Tuple
 from hikkatl.tl.types import (
     Message,
     MessageMediaWebPage,
-    Channel,
-    Chat,
-    MessageReplyHeader,
 )
 from hikkatl.tl.functions.messages import GetDialogFiltersRequest
 from hikkatl.errors import (
@@ -612,7 +609,7 @@ class BroadcastManager:
                 logger.info("🔁 Перезапуск всех рассылок (%d активных)", active)
 
     async def _scan_folders_for_chats(self):
-        """Сканирует пользовательские папки, обходя баг Telegram с чат-листами"""
+        """Сканирует только папки с именами, оканчивающимися на '💫'"""
         try:
             await asyncio.sleep(random.uniform(1.5, 3.5))
             logger.info("🔄 Начинаем сканирование папок...")
@@ -621,96 +618,99 @@ class BroadcastManager:
                 "processed": 0,
                 "added": 0,
                 "errors": 0,
+                "skipped": 0,
                 "invalid": 0,
-                "forums": 0,
-                "chatlists": 0,
             }
 
             try:
                 folders = await self.client(GetDialogFiltersRequest())
             except Exception as e:
-                logger.error(f"🚨 Ошибка получения списка папок: {e}")
+                logger.error(f"🚨 Ошибка получения папок: {e}")
                 return "❌ Не удалось получить список папок"
             for folder in folders:
-                folder_id = getattr(folder, "id", None)
-                folder_title = getattr(folder, "title", "Без названия").strip()
+                folder_title = getattr(folder, "title", "").strip()
 
+                if not folder_title.lower().endswith("💫"):
+                    logger.debug(f"⏩ Пропуск папки без суффикса '💫': {folder_title}")
+                    stats["skipped"] += 1
+                    continue
+                folder_id = getattr(folder, "id", None)
                 if not folder_id or not isinstance(folder_id, int):
-                    logger.debug(f"⚙️ Пропуск системной папки: {folder_title}")
+                    logger.debug(f"🚫 Невалидный ID папки: {folder_title}")
+                    stats["invalid"] += 1
                     continue
                 stats["processed"] += 1
                 logger.info(f"📂 Обработка папки: {folder_title} (ID: {folder_id})")
 
                 try:
-                    if getattr(folder, "chatlist", None):
-                        stats["chatlists"] += 1
-                        peers = getattr(folder, "include_peers", [])
+                    if hasattr(folder, "include_peers") and folder.include_peers:
                         logger.debug(
-                            f"🔗 Используем чат-лист ({len(peers)} участников)"
+                            f"В папке {folder_title} явно указано {len(folder.include_peers)} чатов"
                         )
-                    else:
-                        try:
-                            dialogs = await self.client.get_dialogs(folder=folder_id)
-                            peers = [d.entity for d in dialogs]
-                        except Exception as e:
-                            logger.error(
-                                f"🔥 Ошибка получения диалогов для папки {folder_title} ({folder_id}): {e}",
-                                exc_info=True,
-                            )
-                            stats["errors"] += 1
-                            continue
-                    valid_peers = []
-                    for peer in peers:
-                        try:
-                            if isinstance(peer, Channel):
-                                if peer.forum:
-                                    stats["forums"] += 1
-                                    continue
-                                if peer.broadcast:
-                                    logger.debug(f"📢 Пропуск канала: {peer.title}")
-                                    continue
-                            valid_peers.append(peer)
-                        except Exception as e:
-                            logger.error(f"⚠️ Ошибка обработки peer: {e}")
-                            continue
+
+                        peers = []
+                        for peer in folder.include_peers:
+                            try:
+                                entity = await self.client.get_entity(peer)
+                                peers.append(entity)
+                            except Exception as e:
+                                logger.error(
+                                    f"Не удалось получить сущность для peer {peer}: {e}"
+                                )
+                    logger.debug(
+                        f"📊 Найдено {len(peers)} чатов в папке {folder_title}"
+                    )
+
                     added = 0
-                    for peer in valid_peers:
-                        try:
-                            if self._process_peer(peer, folder_title):
-                                added += 1
-                        except Exception as e:
-                            logger.error(f"⚠️ Ошибка добавления peer: {e}")
-                            continue
+                    for peer in peers:
+                        peer_type = type(peer).__name__
+                        peer_id = getattr(peer, "id", "Unknown")
+                        is_forum = getattr(peer, "forum", False)
+                        is_broadcast = getattr(peer, "broadcast", False)
+
+                        logger.debug(
+                            f"Обработка: {peer_type}, ID: {peer_id}, Forum: {is_forum}, Broadcast: {is_broadcast}"
+                        )
+
+                        if self._process_peer(peer, folder_title):
+                            added += 1
+                            logger.debug(
+                                f"✅ Успешно добавлен чат {peer_id} в {folder_title}"
+                            )
+                    await self.save_config()
                     stats["added"] += added
-                    logger.success(
-                        f"✅ Добавлено {added} чатов из папки {folder_title}"
-                    )
+                    logger.info(f"✅ Добавлено {added} чатов из {folder_title}")
                 except Exception as e:
-                    logger.error(
-                        f"🔥 Критическая ошибка в папке {folder_id}: {e}",
-                        exc_info=True,
-                    )
+                    logger.error(f"🔥 Ошибка: {e}", exc_info=True)
                     stats["errors"] += 1
-                    continue
             report = [
                 "📊 Итоги сканирования:",
-                f"• Обработано папок: {stats['processed']}",
-                f"• Чат-листов: {stats['chatlists']}",
+                f"• Всего папок: {len(folders)}",
+                f"• Обработано (с суффиксом '💫'): {stats['processed']}",
+                f"• Пропущено: {stats['skipped'] + stats['invalid']}",
                 f"• Добавлено чатов: {stats['added']}",
-                f"• Пропущено форумов: {stats['forums']}",
-                f"• Недопустимых папок: {stats['invalid']}",
-                f"• Ошибок обработки: {stats['errors']}",
+                f"• Ошибок: {stats['errors']}",
             ]
             return "\n".join(report)
         except Exception as e:
-            logger.critical(f"💥 Фатальная ошибка сканера: {e}", exc_info=True)
+            logger.critical(f"💥 Фатальная ошибка: {e}", exc_info=True)
             return f"🚨 Критическая ошибка: {e}"
 
     def _process_peer(self, peer, folder_title: str) -> bool:
-        """Обрабатывает отдельный чат/канал"""
+        """Обрабатывает отдельный чат/канал, добавляя только группы"""
         try:
-            if not folder_title.lower().endswith("m"):
+            if hasattr(peer, "broadcast") and peer.broadcast:
+                logger.debug(f"⏩ Пропуск канала {getattr(peer, 'id', 'Unknown')}")
                 return False
+            if hasattr(peer, "forum") and peer.forum:
+                logger.debug(f"⏩ Пропуск форума {getattr(peer, 'id', 'Unknown')}")
+                return False
+            if hasattr(peer, "__class__") and peer.__class__.__name__ == "Channel":
+                if not getattr(peer, "megagroup", False):
+                    logger.debug(
+                        f"⏩ Пропуск канала (не мегагруппа) {getattr(peer, 'id', 'Unknown')}"
+                    )
+                    return False
             code_name = folder_title[:-1].strip().lower()
             if not code_name:
                 return False
@@ -718,13 +718,25 @@ class BroadcastManager:
                 self.codes[code_name] = Broadcast()
                 logger.info(f"✨ Создана новая рассылка: {code_name}")
             chat_id = peer.id
-            if chat_id not in self.codes[code_name].chats:
+
+            if not hasattr(self.codes[code_name], "chats"):
+                self.codes[code_name].chats = defaultdict(set)
+            if (
+                chat_id not in self.codes[code_name].chats
+                or 0 not in self.codes[code_name].chats[chat_id]
+            ):
+                if chat_id not in self.codes[code_name].chats:
+                    self.codes[code_name].chats[chat_id] = set()
                 self.codes[code_name].chats[chat_id].add(0)
                 logger.debug(f"➕ Чат {chat_id} добавлен в {code_name}")
                 return True
+            logger.debug(f"⏩ Чат {chat_id} уже добавлен в {code_name}")
             return False
         except Exception as e:
-            logger.error(f"⚠️ Ошибка обработки чата {peer.id}: {e}")
+            logger.error(
+                f"⚠️ Ошибка обработки чата {getattr(peer, 'id', 'Unknown')}: {e}",
+                exc_info=True,
+            )
             return False
 
     async def _send_message(
@@ -777,8 +789,8 @@ class BroadcastManager:
 
         if enable:
             try:
-                await self._scan_folders_for_chats()
-                return f"🐺 Автодобавление: ВКЛ | Папки просканированы"
+                result = await self._scan_folders_for_chats()
+                return f"🐺 Автодобавление: ВКЛ | Папки просканированы\n\n{result}"
             except Exception as e:
                 logger.error(f"Ошибка при сканировании папок: {e}", exc_info=True)
                 return f"🐺 Автодобавление: ВКЛ | Ошибка сканирования: {str(e)}"
