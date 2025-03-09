@@ -691,19 +691,18 @@ class BroadcastManager:
                 chat_id = f"-100{original_id}"
             else:
                 chat_id = f"{original_id}"
-            chat_id_str = str(chat_id)
 
             if not hasattr(self.codes[code_name], "chats"):
                 self.codes[code_name].chats = defaultdict(set)
             if (
-                chat_id_str not in self.codes[code_name].chats
-                or 0 not in self.codes[code_name].chats[chat_id_str]
+                chat_id not in self.codes[code_name].chats
+                or 0 not in self.codes[code_name].chats[chat_id]
             ):
-                if chat_id_str not in self.codes[code_name].chats:
-                    self.codes[code_name].chats[chat_id_str] = set()
-                self.codes[code_name].chats[chat_id_str].add(0)
+                if chat_id not in self.codes[code_name].chats:
+                    self.codes[code_name].chats[chat_id] = set()
+                self.codes[code_name].chats[chat_id].add(0)
                 return True
-            logger.debug(f"⏩ Чат {chat_id_str} уже добавлен в {code_name}")
+            logger.debug(f"⏩ Чат {chat_id} уже добавлен в {code_name}")
             return False
         except Exception as e:
             logger.error(
@@ -818,13 +817,13 @@ class BroadcastManager:
             for code_name, code_data in raw_config.get("codes", {}).items():
                 try:
                     chats = defaultdict(set)
-                    for chat_id_str, topic_ids in code_data.get("chats", {}).items():
-                        chats[int(chat_id_str)] = set(map(int, topic_ids))
+                    for chat_id, topic_ids in code_data.get("chats", {}).items():
+                        chats[chat_id] = set(map(int, topic_ids))
                     last_group_chats = defaultdict(set)
-                    for chat_id_str, topic_ids in code_data.get(
+                    for chat_id, topic_ids in code_data.get(
                         "last_group_chats", {}
                     ).items():
-                        last_group_chats[int(chat_id_str)] = set(map(int, topic_ids))
+                        last_group_chats[chat_id] = set(map(int, topic_ids))
                     code = Broadcast(
                         chats=chats,
                         messages={
