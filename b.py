@@ -613,6 +613,8 @@ class BroadcastManager:
 
             logger.info(f"Получено диалогов: {len(dialogs)}")
 
+            logger.info(f"Ищем папку, заканчивающуюся на 'm' (например, 'ОТС 5m')")
+
             await asyncio.sleep(random.uniform(1.5, 3.5))
             folders = await self.client(GetDialogFiltersRequest())
 
@@ -620,6 +622,9 @@ class BroadcastManager:
 
             target_folders = {}
 
+            for folder in folders:
+                if hasattr(folder, "title") and folder.title:
+                    logger.info(f"Найдена папка: {folder.title} (ID: {folder.id})")
             for folder in folders:
                 if not hasattr(folder, "title") or not folder.title:
                     continue
@@ -646,17 +651,33 @@ class BroadcastManager:
             skipped_topics = 0
             skipped_other = 0
 
+            folder_dialog_counts = defaultdict(int)
+            for dialog in dialogs:
+                if dialog.folder_id in target_folders:
+                    folder_dialog_counts[dialog.folder_id] += 1
+            for folder_id, count in folder_dialog_counts.items():
+                if folder_id in target_folders:
+                    logger.info(
+                        f"В папке {target_folders[folder_id]} найдено {count} диалогов"
+                    )
             for dialog in dialogs:
                 if not dialog.folder_id or dialog.folder_id not in target_folders:
                     continue
                 code_name = target_folders[dialog.folder_id]
                 chat_id = dialog.entity.id
 
+                entity_type = type(dialog.entity).__name__
                 logger.info(
-                    f"Обработка диалога: {getattr(dialog.entity, 'title', str(dialog.entity))} (ID: {chat_id})"
+                    f"Обработка диалога: {getattr(dialog.entity, 'title', str(dialog.entity))} "
+                    f"(ID: {chat_id}, Тип: {entity_type})"
                 )
 
-                is_forum = hasattr(dialog.entity, "forum") and dialog.entity.forum
+                is_forum = False
+                if hasattr(dialog.entity, "forum"):
+                    is_forum = dialog.entity.forum
+                    logger.info(f"Чат имеет атрибут forum={is_forum}")
+                else:
+                    logger.info(f"Чат не имеет атрибута forum")
                 if is_forum:
                     logger.info(
                         f"Пропуск форума: {getattr(dialog.entity, 'title', str(dialog.entity))}"
@@ -665,7 +686,9 @@ class BroadcastManager:
                     continue
                 try:
                     await asyncio.sleep(random.uniform(0.5, 1.5))
+                    logger.info(f"Попытка получить entity для {chat_id}")
                     await self.client.get_entity(chat_id)
+                    logger.info(f"Entity для {chat_id} успешно получен")
 
                     if chat_id not in self.codes[code_name].chats:
                         self.codes[code_name].chats[chat_id].add(0)
@@ -673,9 +696,14 @@ class BroadcastManager:
                         logger.info(
                             f"✅ Добавлен чат: {getattr(dialog.entity, 'title', str(dialog.entity))} -> {code_name}"
                         )
+                    else:
+                        logger.info(f"Чат {chat_id} уже добавлен в {code_name}")
                 except Exception as e:
                     logger.error(f"Ошибка при добавлении чата {chat_id}: {e}")
                     skipped_other += 1
+            for code_name in target_folders.values():
+                chat_count = sum(len(v) for v in self.codes[code_name].chats.values())
+                logger.info(f"Итого в рассылке {code_name}: {chat_count} чатов")
             await self.save_config()
 
             report = ["📁 Сканирование папок завершено:"]
@@ -763,6 +791,7 @@ class BroadcastManager:
             if action == "l":
                 response = await self._generate_stats_report()
             elif action == "w":
+                await utils.answer(message, "💫")
                 response = await self._toggle_watcher(args)
             else:
                 code_name = args[1].lower() if len(args) > 1 else None
