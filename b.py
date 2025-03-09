@@ -701,7 +701,7 @@ class BroadcastManager:
             await self._handle_permanent_error(chat_id, topic_id)
             return False
 
-    def _toggle_watcher(self, args) -> str:
+    async def _toggle_watcher(self, args) -> str:
         """Переключение авто-добавления: .br w [on/off]"""
         if len(args) < 2:
             return f"🔍 Автодобавление: {'ON' if self.watcher_enabled else 'OFF'}"
@@ -710,7 +710,7 @@ class BroadcastManager:
 
         if enable:
             try:
-                self._scan_folders_for_chats()
+                await self._scan_folders_for_chats()
                 return f"🐺 Автодобавление: ВКЛ | Папки просканированы"
             except Exception as e:
                 logger.error(f"Ошибка при сканировании папок: {e}", exc_info=True)
@@ -731,7 +731,7 @@ class BroadcastManager:
             if action == "l":
                 response = await self._generate_stats_report()
             elif action == "w":
-                response = self._toggle_watcher(args)
+                response = await self._toggle_watcher(args)
             else:
                 code_name = args[1].lower() if len(args) > 1 else None
                 if not code_name:
