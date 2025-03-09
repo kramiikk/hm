@@ -9,7 +9,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
-from hikkatl.tl.types import Message, MessageMediaWebPage, Chat, MessageReplyHeader
+from hikkatl.tl.types import (
+    Message,
+    MessageMediaWebPage,
+    Channel,
+    Chat,
+    MessageReplyHeader,
+)
 from hikkatl.tl.functions.messages import GetDialogFiltersRequest
 from hikkatl.errors import (
     FloodWaitError,
@@ -606,92 +612,120 @@ class BroadcastManager:
                 logger.info("🔁 Перезапуск всех рассылок (%d активных)", active)
 
     async def _scan_folders_for_chats(self):
-        """Сканирует папки с названиями, заканчивающимися на 'm', и добавляет чаты в соответствующие рассылки"""
+        """Сканирует пользовательские папки, обходя баг Telegram с чат-листами"""
         try:
             await asyncio.sleep(random.uniform(1.5, 3.5))
-            logger.info("Получение списка папок...")
-            folders = await self.client(GetDialogFiltersRequest())
+            logger.info("🔄 Начинаем сканирование папок...")
 
-            target_folders = {}
+            stats = {
+                "processed": 0,
+                "added": 0,
+                "errors": 0,
+                "invalid": 0,
+                "forums": 0,
+                "chatlists": 0,
+            }
+
+            try:
+                folders = await self.client(GetDialogFiltersRequest())
+            except Exception as e:
+                logger.error(f"🚨 Ошибка получения списка папок: {e}")
+                return "❌ Не удалось получить список папок"
             for folder in folders:
-                if hasattr(folder, "title") and folder.title:
-                    logger.info(f"Обработка папки: {folder.title} (ID: {folder.id})")
-                    if folder.title.endswith("m"):
-                        parts = folder.title.split()
-                        code_name = (
-                            " ".join(parts[:-1]).lower()
-                            if len(parts) > 1
-                            else parts[0].lower().rstrip("m")
-                        )
-                        target_folders[folder.id] = code_name
-                        logger.info(
-                            f"Найдена целевая папка: {folder.title} -> {code_name}"
-                        )
-            added_counts = defaultdict(int)
-            skipped_forums = 0
-            skipped_errors = 0
+                folder_id = getattr(folder, "id", None)
+                folder_title = getattr(folder, "title", "Без названия").strip()
 
-            for folder_id, code_name in target_folders.items():
-                logger.info(
-                    f"Получение диалогов для папки {code_name} (ID: {folder_id})..."
-                )
+                if not folder_id or not isinstance(folder_id, int):
+                    logger.debug(f"⚙️ Пропуск системной папки: {folder_title}")
+                    continue
+                stats["processed"] += 1
+                logger.info(f"📂 Обработка папки: {folder_title} (ID: {folder_id})")
+
                 try:
-                    dialogs = await self.client.get_dialogs(folder=folder_id)
-                    logger.info(f"Найдено {len(dialogs)} диалогов в папке {code_name}")
+                    if getattr(folder, "chatlist", None):
+                        stats["chatlists"] += 1
+                        peers = getattr(folder, "include_peers", [])
+                        logger.debug(
+                            f"🔗 Используем чат-лист ({len(peers)} участников)"
+                        )
+                    else:
+                        try:
+                            dialogs = await self.client.get_dialogs(folder=folder_id)
+                            peers = [d.entity for d in dialogs]
+                        except Exception as e:
+                            logger.error(
+                                f"🔥 Ошибка получения диалогов для папки {folder_title} ({folder_id}): {e}",
+                                exc_info=True,
+                            )
+                            stats["errors"] += 1
+                            continue
+                    valid_peers = []
+                    for peer in peers:
+                        try:
+                            if isinstance(peer, Channel):
+                                if peer.forum:
+                                    stats["forums"] += 1
+                                    continue
+                                if peer.broadcast:
+                                    logger.debug(f"📢 Пропуск канала: {peer.title}")
+                                    continue
+                            valid_peers.append(peer)
+                        except Exception as e:
+                            logger.error(f"⚠️ Ошибка обработки peer: {e}")
+                            continue
+                    added = 0
+                    for peer in valid_peers:
+                        try:
+                            if self._process_peer(peer, folder_title):
+                                added += 1
+                        except Exception as e:
+                            logger.error(f"⚠️ Ошибка добавления peer: {e}")
+                            continue
+                    stats["added"] += added
+                    logger.success(
+                        f"✅ Добавлено {added} чатов из папки {folder_title}"
+                    )
                 except Exception as e:
                     logger.error(
-                        f"Ошибка получения диалогов для папки {folder_id}: {e}"
+                        f"🔥 Критическая ошибка в папке {folder_id}: {e}",
+                        exc_info=True,
                     )
+                    stats["errors"] += 1
                     continue
-                for dialog in dialogs:
-                    entity = dialog.entity
-                    chat_id = entity.id
-                    entity_type = type(entity).__name__
-
-                    is_forum = False
-                    if isinstance(entity, Chat):
-                        is_forum = entity.broadcast and entity.megagroup
-                        logger.debug(
-                            f"Группа {chat_id}: broadcast={entity.broadcast}, megagroup={entity.megagroup}"
-                        )
-                    try:
-                        last_message = dialog.message
-                        if last_message and isinstance(
-                            last_message.reply_to, MessageReplyHeader
-                        ):
-                            is_forum = last_message.reply_to.forum_topic
-                            logger.debug(
-                                f"Обнаружен forum_topic в сообщении {last_message.id}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"Ошибка проверки сообщения: {e}")
-                    if is_forum:
-                        logger.info(f"Пропуск форума ({entity_type}): {entity.title}")
-                        skipped_forums += 1
-                        continue
-                    try:
-                        await self.client.get_entity(chat_id)
-                        if chat_id not in self.codes[code_name].chats:
-                            self.codes[code_name].chats[chat_id].add(0)
-                            added_counts[code_name] += 1
-                            logger.info(
-                                f"✅ Добавлен чат ({entity_type}): {entity.title}"
-                            )
-                    except Exception as e:
-                        logger.error(f"Ошибка доступа к чату {chat_id}: {e}")
-                        skipped_errors += 1
-            await self.save_config()
-            report = ["📁 Результаты сканирования:"]
-            for code_name, count in added_counts.items():
-                report.append(f"\n▸ {code_name}: +{count} чатов")
-            if skipped_forums:
-                report.append(f"\n🚫 Пропущено форумов: {skipped_forums}")
-            if skipped_errors:
-                report.append(f"\n⚠️ Ошибок доступа: {skipped_errors}")
-            return "".join(report) if added_counts else "📁 Новые чаты не найдены"
+            report = [
+                "📊 Итоги сканирования:",
+                f"• Обработано папок: {stats['processed']}",
+                f"• Чат-листов: {stats['chatlists']}",
+                f"• Добавлено чатов: {stats['added']}",
+                f"• Пропущено форумов: {stats['forums']}",
+                f"• Недопустимых папок: {stats['invalid']}",
+                f"• Ошибок обработки: {stats['errors']}",
+            ]
+            return "\n".join(report)
         except Exception as e:
-            logger.error(f"Критическая ошибка: {e}", exc_info=True)
-            return f"🚨 Ошибка: {str(e)}"
+            logger.critical(f"💥 Фатальная ошибка сканера: {e}", exc_info=True)
+            return f"🚨 Критическая ошибка: {e}"
+
+    def _process_peer(self, peer, folder_title: str) -> bool:
+        """Обрабатывает отдельный чат/канал"""
+        try:
+            if not folder_title.lower().endswith("m"):
+                return False
+            code_name = folder_title[:-1].strip().lower()
+            if not code_name:
+                return False
+            if code_name not in self.codes:
+                self.codes[code_name] = Broadcast()
+                logger.info(f"✨ Создана новая рассылка: {code_name}")
+            chat_id = peer.id
+            if chat_id not in self.codes[code_name].chats:
+                self.codes[code_name].chats[chat_id].add(0)
+                logger.debug(f"➕ Чат {chat_id} добавлен в {code_name}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"⚠️ Ошибка обработки чата {peer.id}: {e}")
+            return False
 
     async def _send_message(
         self, chat_id: int, msg: Message, topic_id: Optional[int] = None
