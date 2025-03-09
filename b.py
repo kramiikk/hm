@@ -611,8 +611,12 @@ class BroadcastManager:
             await asyncio.sleep(random.uniform(1.5, 3.5))
             dialogs = await self.client.get_dialogs()
 
+            logger.info(f"Получено диалогов: {len(dialogs)}")
+
             await asyncio.sleep(random.uniform(1.5, 3.5))
             folders = await self.client(GetDialogFiltersRequest())
+
+            logger.info(f"Получено папок: {len(folders)}")
 
             target_folders = {}
 
@@ -621,8 +625,12 @@ class BroadcastManager:
                     continue
                 if folder.title.endswith("m"):
                     parts = folder.title.split()
-                    if len(parts) >= 2:
-                        code_name = " ".join(parts[:-1]).lower()
+                    if len(parts) >= 1:
+                        code_name = (
+                            " ".join(parts[:-1]).lower()
+                            if len(parts) > 1
+                            else parts[0].lower().rstrip("m")
+                        )
 
                         if code_name not in self.codes:
                             self.codes[code_name] = Broadcast(interval=(10, 11))
@@ -631,8 +639,12 @@ class BroadcastManager:
                                 f"➕ Создана новая рассылка из папки: {code_name}"
                             )
                         target_folders[folder.id] = code_name
+                        logger.info(
+                            f"Найдена целевая папка: {folder.title} (ID: {folder.id}) -> {code_name}"
+                        )
             added_counts = defaultdict(int)
             skipped_topics = 0
+            skipped_other = 0
 
             for dialog in dialogs:
                 if not dialog.folder_id or dialog.folder_id not in target_folders:
@@ -640,12 +652,30 @@ class BroadcastManager:
                 code_name = target_folders[dialog.folder_id]
                 chat_id = dialog.entity.id
 
-                if hasattr(dialog.entity, "forum") and dialog.entity.forum:
+                logger.info(
+                    f"Обработка диалога: {getattr(dialog.entity, 'title', str(dialog.entity))} (ID: {chat_id})"
+                )
+
+                is_forum = hasattr(dialog.entity, "forum") and dialog.entity.forum
+                if is_forum:
+                    logger.info(
+                        f"Пропуск форума: {getattr(dialog.entity, 'title', str(dialog.entity))}"
+                    )
                     skipped_topics += 1
                     continue
-                if chat_id not in self.codes[code_name].chats:
-                    self.codes[code_name].chats[chat_id].add(0)
-                    added_counts[code_name] += 1
+                try:
+                    await asyncio.sleep(random.uniform(0.5, 1.5))
+                    await self.client.get_entity(chat_id)
+
+                    if chat_id not in self.codes[code_name].chats:
+                        self.codes[code_name].chats[chat_id].add(0)
+                        added_counts[code_name] += 1
+                        logger.info(
+                            f"✅ Добавлен чат: {getattr(dialog.entity, 'title', str(dialog.entity))} -> {code_name}"
+                        )
+                except Exception as e:
+                    logger.error(f"Ошибка при добавлении чата {chat_id}: {e}")
+                    skipped_other += 1
             await self.save_config()
 
             report = ["📁 Сканирование папок завершено:"]
@@ -653,12 +683,14 @@ class BroadcastManager:
                 report.append(f"\n▸ <code>{code_name}</code>: +{count} чатов")
             if skipped_topics > 0:
                 report.append(f"\n🚫 Пропущено {skipped_topics} форумов с топиками")
+            if skipped_other > 0:
+                report.append(f"\n⚠️ Пропущено {skipped_other} чатов из-за ошибок")
             if not added_counts:
                 return "📁 Сканирование завершено. Новых чатов не найдено."
             return "".join(report)
         except Exception as e:
             logger.error(f"Ошибка при сканировании папок: {e}", exc_info=True)
-            raise
+            return f"⚠️ Ошибка при сканировании папок: {e}"
 
     async def _send_message(
         self, chat_id: int, msg: Message, topic_id: Optional[int] = None
