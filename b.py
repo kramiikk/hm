@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
 from hikkatl.tl.types import Message, MessageMediaWebPage
+from hikkatl.tl.functions.messages import GetDialogFiltersRequest
 from hikkatl.errors import (
     FloodWaitError,
     SlowModeWaitError,
@@ -604,6 +605,61 @@ class BroadcastManager:
                 active = sum(1 for code in self.codes.values() if code._active)
                 logger.info("🔁 Перезапуск всех рассылок (%d активных)", active)
 
+    async def _scan_folders_for_chats(self):
+        """Сканирует папки с названиями, заканчивающимися на 'm', и добавляет чаты в соответствующие рассылки"""
+        try:
+            await asyncio.sleep(random.uniform(1.5, 3.5))
+            dialogs = await self.client.get_dialogs()
+
+            await asyncio.sleep(random.uniform(1.5, 3.5))
+            folders = await self.client(GetDialogFiltersRequest())
+
+            target_folders = {}
+
+            for folder in folders:
+                if not hasattr(folder, "title") or not folder.title:
+                    continue
+                if folder.title.endswith("m"):
+                    parts = folder.title.split()
+                    if len(parts) >= 2:
+                        code_name = " ".join(parts[:-1]).lower()
+
+                        if code_name not in self.codes:
+                            self.codes[code_name] = Broadcast(interval=(10, 11))
+                            self.codes[code_name].original_interval = (10, 11)
+                            logger.info(
+                                f"➕ Создана новая рассылка из папки: {code_name}"
+                            )
+                        target_folders[folder.id] = code_name
+            added_counts = defaultdict(int)
+            skipped_topics = 0
+
+            for dialog in dialogs:
+                if not dialog.folder_id or dialog.folder_id not in target_folders:
+                    continue
+                code_name = target_folders[dialog.folder_id]
+                chat_id = dialog.entity.id
+
+                if hasattr(dialog.entity, "forum") and dialog.entity.forum:
+                    skipped_topics += 1
+                    continue
+                if chat_id not in self.codes[code_name].chats:
+                    self.codes[code_name].chats[chat_id].add(0)
+                    added_counts[code_name] += 1
+            await self.save_config()
+
+            report = ["📁 Сканирование папок завершено:"]
+            for code_name, count in added_counts.items():
+                report.append(f"\n▸ <code>{code_name}</code>: +{count} чатов")
+            if skipped_topics > 0:
+                report.append(f"\n🚫 Пропущено {skipped_topics} форумов с топиками")
+            if not added_counts:
+                return "📁 Сканирование завершено. Новых чатов не найдено."
+            return "".join(report)
+        except Exception as e:
+            logger.error(f"Ошибка при сканировании папок: {e}", exc_info=True)
+            raise
+
     async def _send_message(
         self, chat_id: int, msg: Message, topic_id: Optional[int] = None
     ) -> bool:
@@ -649,8 +705,18 @@ class BroadcastManager:
         """Переключение авто-добавления: .br w [on/off]"""
         if len(args) < 2:
             return f"🔍 Автодобавление: {'ON' if self.watcher_enabled else 'OFF'}"
-        self.watcher_enabled = args[1].lower() == "on"
-        return f"🐺 Автодобавление: {'ВКЛ' if self.watcher_enabled else 'ВЫКЛ'}"
+        enable = args[1].lower() == "on"
+        self.watcher_enabled = enable
+
+        if enable:
+            try:
+                self._scan_folders_for_chats()
+                return f"🐺 Автодобавление: ВКЛ | Папки просканированы"
+            except Exception as e:
+                logger.error(f"Ошибка при сканировании папок: {e}", exc_info=True)
+                return f"🐺 Автодобавление: ВКЛ | Ошибка сканирования: {str(e)}"
+        else:
+            return f"🐺 Автодобавление: ВЫКЛ"
 
     async def handle_command(self, message):
         """Обработчик команд управления рассылкой"""
