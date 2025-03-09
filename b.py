@@ -189,13 +189,13 @@ class BroadcastMod(loader.Module):
 class Broadcast:
     chats: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
     messages: Set[Tuple[int, int]] = field(default_factory=set)
-    interval: Tuple[int, int] = (5, 6)
+    interval: Tuple[int, int] = (10, 11)
     _active: bool = field(default=False, init=False)
     groups: List[List[Tuple[int, int]]] = field(default_factory=list)
     last_group_chats: Dict[int, Set[int]] = field(
         default_factory=lambda: defaultdict(set)
     )
-    original_interval: Tuple[int, int] = (5, 6)
+    original_interval: Tuple[int, int] = (10, 11)
 
 
 class BroadcastManager:
@@ -611,15 +611,13 @@ class BroadcastManager:
     async def _scan_folders_for_chats(self):
         """Сканирует только папки с именами, оканчивающимися на '💫'"""
         try:
-            await asyncio.sleep(random.uniform(1.5, 3.5))
+            await asyncio.sleep(random.uniform(1.5, 5.5))
             logger.info("🔄 Начинаем сканирование папок...")
 
             stats = {
                 "processed": 0,
                 "added": 0,
                 "errors": 0,
-                "skipped": 0,
-                "invalid": 0,
             }
 
             try:
@@ -631,23 +629,15 @@ class BroadcastManager:
                 folder_title = getattr(folder, "title", "").strip()
 
                 if not folder_title.lower().endswith("💫"):
-                    logger.debug(f"⏩ Пропуск папки без суффикса '💫': {folder_title}")
-                    stats["skipped"] += 1
                     continue
                 folder_id = getattr(folder, "id", None)
                 if not folder_id or not isinstance(folder_id, int):
-                    logger.debug(f"🚫 Невалидный ID папки: {folder_title}")
-                    stats["invalid"] += 1
                     continue
                 stats["processed"] += 1
                 logger.info(f"📂 Обработка папки: {folder_title} (ID: {folder_id})")
 
                 try:
                     if hasattr(folder, "include_peers") and folder.include_peers:
-                        logger.debug(
-                            f"В папке {folder_title} явно указано {len(folder.include_peers)} чатов"
-                        )
-
                         peers = []
                         for peer in folder.include_peers:
                             try:
@@ -657,26 +647,10 @@ class BroadcastManager:
                                 logger.error(
                                     f"Не удалось получить сущность для peer {peer}: {e}"
                                 )
-                    logger.debug(
-                        f"📊 Найдено {len(peers)} чатов в папке {folder_title}"
-                    )
-
                     added = 0
                     for peer in peers:
-                        peer_type = type(peer).__name__
-                        peer_id = getattr(peer, "id", "Unknown")
-                        is_forum = getattr(peer, "forum", False)
-                        is_broadcast = getattr(peer, "broadcast", False)
-
-                        logger.debug(
-                            f"Обработка: {peer_type}, ID: {peer_id}, Forum: {is_forum}, Broadcast: {is_broadcast}"
-                        )
-
                         if self._process_peer(peer, folder_title):
                             added += 1
-                            logger.debug(
-                                f"✅ Успешно добавлен чат {peer_id} в {folder_title}"
-                            )
                     await self.save_config()
                     stats["added"] += added
                     logger.info(f"✅ Добавлено {added} чатов из {folder_title}")
@@ -686,8 +660,7 @@ class BroadcastManager:
             report = [
                 "📊 Итоги сканирования:",
                 f"• Всего папок: {len(folders)}",
-                f"• Обработано (с суффиксом '💫'): {stats['processed']}",
-                f"• Пропущено: {stats['skipped'] + stats['invalid']}",
+                f"• Обработано: {stats['processed']}",
                 f"• Добавлено чатов: {stats['added']}",
                 f"• Ошибок: {stats['errors']}",
             ]
@@ -700,16 +673,11 @@ class BroadcastManager:
         """Обрабатывает отдельный чат/канал, добавляя только группы"""
         try:
             if hasattr(peer, "broadcast") and peer.broadcast:
-                logger.debug(f"⏩ Пропуск канала {getattr(peer, 'id', 'Unknown')}")
                 return False
             if hasattr(peer, "forum") and peer.forum:
-                logger.debug(f"⏩ Пропуск форума {getattr(peer, 'id', 'Unknown')}")
                 return False
             if hasattr(peer, "__class__") and peer.__class__.__name__ == "Channel":
                 if not getattr(peer, "megagroup", False):
-                    logger.debug(
-                        f"⏩ Пропуск канала (не мегагруппа) {getattr(peer, 'id', 'Unknown')}"
-                    )
                     return False
             code_name = folder_title[:-1].strip().lower()
             if not code_name:
@@ -717,20 +685,25 @@ class BroadcastManager:
             if code_name not in self.codes:
                 self.codes[code_name] = Broadcast()
                 logger.info(f"✨ Создана новая рассылка: {code_name}")
-            chat_id = peer.id
+            original_id = peer.id
+
+            if hasattr(peer, "__class__") and peer.__class__.__name__ == "Channel":
+                chat_id = f"-100{original_id}"
+            else:
+                chat_id = f"{original_id}"
+            chat_id_str = str(chat_id)
 
             if not hasattr(self.codes[code_name], "chats"):
                 self.codes[code_name].chats = defaultdict(set)
             if (
-                chat_id not in self.codes[code_name].chats
-                or 0 not in self.codes[code_name].chats[chat_id]
+                chat_id_str not in self.codes[code_name].chats
+                or 0 not in self.codes[code_name].chats[chat_id_str]
             ):
-                if chat_id not in self.codes[code_name].chats:
-                    self.codes[code_name].chats[chat_id] = set()
-                self.codes[code_name].chats[chat_id].add(0)
-                logger.debug(f"➕ Чат {chat_id} добавлен в {code_name}")
+                if chat_id_str not in self.codes[code_name].chats:
+                    self.codes[code_name].chats[chat_id_str] = set()
+                self.codes[code_name].chats[chat_id_str].add(0)
                 return True
-            logger.debug(f"⏩ Чат {chat_id} уже добавлен в {code_name}")
+            logger.debug(f"⏩ Чат {chat_id_str} уже добавлен в {code_name}")
             return False
         except Exception as e:
             logger.error(
@@ -763,11 +736,6 @@ class BroadcastManager:
                     message=msg.text,
                     **send_args,
                 )
-            logger.debug(
-                "✅ [%s->%s] Сообщение отправлено",
-                msg.chat_id,
-                f"{chat_id}:{topic_id}" if topic_id else chat_id,
-            )
             return True
         except FloodWaitError as e:
             await self._handle_flood_wait(e, chat_id)
@@ -863,9 +831,9 @@ class BroadcastManager:
                             (int(msg["chat_id"]), int(msg["message_id"]))
                             for msg in code_data.get("messages", [])
                         },
-                        interval=tuple(map(int, code_data.get("interval", (5, 6)))),
+                        interval=tuple(map(int, code_data.get("interval", (10, 11)))),
                         original_interval=tuple(
-                            map(int, code_data.get("original_interval", (5, 6)))
+                            map(int, code_data.get("original_interval", (10, 11)))
                         ),
                         last_group_chats=last_group_chats,
                     )
