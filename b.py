@@ -838,9 +838,8 @@ class BroadcastManager:
                     )
 
                     code.groups = [
-                        [(int(chat_id), int(topic_id)]
+                        [tuple(map(int, chat_data)) for chat_data in group]
                         for group in code_data.get("groups", [])
-                        for chat_id, topic_id in group
                     ]
 
                     code._active = code_data.get("active", False)
