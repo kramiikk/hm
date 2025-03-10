@@ -234,7 +234,7 @@ class BroadcastManager:
                 if code.last_group_chats != current_chats:
                     code.last_group_chats = current_chats.copy()
                     chats = [
-                        [int(chat_id), int(topic_id)]
+                        (chat_id,topic_id)
                         for chat_id, topic_ids in code.chats.items()
                         for topic_id in topic_ids
                     ]
@@ -823,7 +823,7 @@ class BroadcastManager:
                     for chat_id, topic_ids in code_data.get(
                         "last_group_chats", {}
                     ).items():
-                        last_group_chats[chat_id] = set(map(int, topic_ids))
+                        last_group_chats[int(chat_id)] = set(map(int, topic_ids))
                     code = Broadcast(
                         chats=chats,
                         messages={
@@ -838,8 +838,9 @@ class BroadcastManager:
                     )
 
                     code.groups = [
-                        [tuple(map(int, chat_data)) for chat_data in group]
+                        [(int(chat_id), int(topic_id)]
                         for group in code_data.get("groups", [])
+                        for chat_id, topic_id in group
                     ]
 
                     code._active = code_data.get("active", False)
