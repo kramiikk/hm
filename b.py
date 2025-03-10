@@ -234,7 +234,7 @@ class BroadcastManager:
                 if code.last_group_chats != current_chats:
                     code.last_group_chats = current_chats.copy()
                     chats = [
-                        (chat_id, topic_id)
+                        [int(chat_id), int(topic_id)]
                         for chat_id, topic_ids in code.chats.items()
                         for topic_id in topic_ids
                     ]
@@ -582,7 +582,7 @@ class BroadcastManager:
                 if identifier.startswith(("https://t.me/", "t.me/")):
                     parts = identifier.rstrip("/").split("/")
                     identifier = parts[-1]
-                if identifier.lstrip("-").isdigit():
+                if identifier.replace("-", "").isdigit():
                     return int(identifier)
             await asyncio.sleep(random.uniform(1.5, 5.5))
             entity = await self.client.get_entity(identifier, exp=3600)
@@ -688,9 +688,9 @@ class BroadcastManager:
             original_id = peer.id
 
             if hasattr(peer, "__class__") and peer.__class__.__name__ == "Channel":
-                chat_id = f"-100{original_id}"
+                chat_id = int(f"-100{original_id}")
             else:
-                chat_id = f"{original_id}"
+                chat_id = original_id
 
             if not hasattr(self.codes[code_name], "chats"):
                 self.codes[code_name].chats = defaultdict(set)
@@ -818,7 +818,7 @@ class BroadcastManager:
                 try:
                     chats = defaultdict(set)
                     for chat_id, topic_ids in code_data.get("chats", {}).items():
-                        chats[chat_id] = set(map(int, topic_ids))
+                        chats[int(chat_id)] = set(map(int, topic_ids))
                     last_group_chats = defaultdict(set)
                     for chat_id, topic_ids in code_data.get(
                         "last_group_chats", {}
@@ -862,7 +862,7 @@ class BroadcastManager:
                 "codes": {
                     name: {
                         "chats": {
-                            str(chat_id): list(topic_ids)
+                            int(chat_id): list(topic_ids)
                             for chat_id, topic_ids in dict(code.chats).items()
                         },
                         "messages": [
@@ -877,7 +877,7 @@ class BroadcastManager:
                             for group in code.groups
                         ],
                         "last_group_chats": {
-                            str(k): list(v)
+                            int(k): list(v)
                             for k, v in dict(code.last_group_chats).items()
                         },
                     }
