@@ -506,12 +506,20 @@ class BroadcastManager:
         chat_id = await self._parse_chat_identifier(target)
 
         if not chat_id:
-            return "🫵 Неверный формат чата"
-        if chat_id not in code.chats:
-            return "ℹ️ Чат не найден"
-        del code.chats[chat_id]
-        await self.save_config()
-        return f"🐲 -1 чат | Осталось: {sum(len(v) for v in code.chats.values())}"
+            return "🫵 Неверный формат чата или чат недоступен"
+        if chat_id in code.chats:
+            del code.chats[chat_id]
+            await self.save_config()
+            return f"🐲 -1 чат | Осталось: {sum(len(v) for v in code.chats.values())}"
+        if str(chat_id).startswith("-100"):
+            alternative_id = int(str(chat_id)[4:])
+        else:
+            alternative_id = int(f"-100{chat_id}")
+        if alternative_id in code.chats:
+            del code.chats[alternative_id]
+            await self.save_config()
+            return f"🐲 -1 чат | Осталось: {sum(len(v) for v in code.chats.values())}"
+        return "ℹ️ Чат не найден"
 
     async def _handle_start(self, message, code, code_name, args) -> str:
         """Запуск рассылки: .br s [code]"""
@@ -542,19 +550,39 @@ class BroadcastManager:
         return f"🧊 {code_name} остановлена"
 
     async def _parse_chat_identifier(self, identifier) -> Optional[int]:
-        """Парсинг идентификатора чата"""
+        """Парсинг идентификатора чата с поддержкой различных форматов"""
         try:
             if isinstance(identifier, str):
                 identifier = identifier.strip()
+
                 if identifier.startswith(("https://t.me/", "t.me/")):
                     parts = identifier.rstrip("/").split("/")
                     identifier = parts[-1]
                 if identifier.replace("-", "").isdigit():
-                    return int(identifier)
+                    chat_id = int(identifier)
+
+                    await asyncio.sleep(random.uniform(1.5, 5.5))
+                    try:
+                        await self.client.get_entity(chat_id, exp=3600)
+                        return chat_id
+                    except Exception:
+                        if not str(chat_id).startswith("-100") and str(
+                            chat_id
+                        ).startswith("-"):
+                            try:
+                                modified_id = int(f"-100{str(chat_id)[1:]}")
+                                await self.client.get_entity(modified_id, exp=3600)
+                                return modified_id
+                            except Exception:
+                                pass
             await asyncio.sleep(random.uniform(1.5, 5.5))
             entity = await self.client.get_entity(identifier, exp=3600)
+
+            if hasattr(entity, "__class__") and entity.__class__.__name__ == "Channel":
+                return int(f"-100{entity.id}")
             return entity.id
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error parsing chat identifier '{identifier}': {e}")
             return None
 
     async def _restart_all_broadcasts(self):
