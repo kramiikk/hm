@@ -724,18 +724,18 @@ class BroadcastManager:
             send_args = {"entity": chat_id}
             if topic_id not in (None, 0):
                 send_args["reply_to"] = topic_id
-            message_text = html.unescape(msg.text) if msg.text else None
+            message = html.unescape(msg.text) if msg.text else None
 
             if msg.media and not isinstance(msg.media, MessageMediaWebPage):
                 await self.client.send_file(
                     file=msg.media,
-                    caption=message_text,
+                    caption=message,
                     parse_mode="html",
                     **send_args,
                 )
             else:
                 await self.client.send_message(
-                    message=message_text,
+                    message=message,
                     parse_mode="html",
                     **send_args,
                 )
