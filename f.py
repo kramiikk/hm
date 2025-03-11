@@ -9,7 +9,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
-from hikkatl.tl.types import Message
+from hikkatl.tl.types import (
+    Message,
+    MessageMediaWebPage,
+)
+from hikkatl.tl.functions.messages import GetDialogFiltersRequest
 from hikkatl.errors import (
     FloodWaitError,
     SlowModeWaitError,
@@ -119,9 +123,6 @@ class BroadcastMod(loader.Module):
                 self.manager.broadcast_tasks[code_name] = asyncio.create_task(
                     self.manager._broadcast_loop(code_name)
                 )
-        logger.info(
-            "BroadcastMod загружен. Восстановлено рассылок: %d", len(self.manager.codes)
-        )
 
     async def on_unload(self):
         if not hasattr(self, "manager"):
@@ -185,13 +186,13 @@ class BroadcastMod(loader.Module):
 class Broadcast:
     chats: Dict[int, Set[int]] = field(default_factory=lambda: defaultdict(set))
     messages: Set[Tuple[int, int]] = field(default_factory=set)
-    interval: Tuple[int, int] = (5, 6)
+    interval: Tuple[int, int] = (10, 11)
     _active: bool = field(default=False, init=False)
     groups: List[List[Tuple[int, int]]] = field(default_factory=list)
     last_group_chats: Dict[int, Set[int]] = field(
         default_factory=lambda: defaultdict(set)
     )
-    original_interval: Tuple[int, int] = (5, 6)
+    original_interval: Tuple[int, int] = (10, 11)
 
 
 class BroadcastManager:
@@ -305,10 +306,6 @@ class BroadcastManager:
                 new_max = max(min(int(code.interval[1] * 0.85), 1440), new_min + 2)
                 code.interval = (new_min, new_max)
         await self.save_config()
-        logger.debug(
-            "🔄 Проверка интервалов. С момента последнего FloodWait: %.1f часов",
-            time_since_last_flood / 3600,
-        )
 
     async def _fetch_message(self, chat_id: int, message_id: int):
         cache_key = (chat_id, message_id)
@@ -376,9 +373,6 @@ class BroadcastManager:
         code.chats[chat_id].add(topic_id or 0)
 
         await self.save_config()
-        logger.info(
-            "➕ [%s] Добавлен чат %s (топик %s)", code_name, chat_id, topic_id or "нет"
-        )
         return f"🪴 +1 {'топик' if topic_id else 'чат'} | Всего: {sum(len(v) for v in code.chats.values())}"
 
     async def _handle_delete(self, message, code, code_name, args) -> str:
@@ -427,22 +421,13 @@ class BroadcastManager:
         wait_time = min(max(e.seconds + 5, avg_wait * 1.5), 7200)
 
         self.flood_wait_times.append(wait_time)
-        logger.warning(
-            "⏳ FloodWait %d сек. (чат %d). Глобальная пауза %.1f мин.",
-            e.seconds,
-            chat_id,
-            wait_time / 60,
-        )
+
         if len(self.flood_wait_times) > 10:
             self.global_backoff_multiplier *= 1.5
             self.flood_wait_times = self.flood_wait_times[-10:]
         await self.client.send_message(
             self.tg_id,
             f"🚨 Обнаружен FloodWait {e.seconds}s! Все рассылки приостановлены на {wait_time}s",
-        )
-        logger.info(
-            f"🚨 FloodWait {e.seconds} сек. в чате {chat_id}. Среднее время ожидания: {avg_wait:.1f} сек. "
-            f"Всего FloodWait за последние 12 часов: {len(self.flood_wait_times)}"
         )
 
         tasks_to_cancel = list(self.broadcast_tasks.values())
@@ -466,7 +451,7 @@ class BroadcastManager:
             await asyncio.sleep(random.uniform(1.5, 5.5))
             await self.client.get_entity(chat_id)
         except Exception as e:
-            logger.warning(f"Failed to get entity for chat {chat_id}: {e}")
+            logger.error(f"Failed to get entity for chat {chat_id}: {e}")
         self.pause_event.clear()
         await self._restart_all_broadcasts()
         await self.client.send_message(
@@ -499,11 +484,6 @@ class BroadcastManager:
                 code.last_group_chats = defaultdict(set)
         if modified:
             await self.save_config()
-            logger.info("Removed invalid chat %d (topic: %s)", chat_id, topic_id)
-        else:
-            logger.warning(
-                f"Failed to remove chat {chat_id} (topic: {topic_id}), not found in any code"
-            )
 
     async def _handle_remove(self, message, code, code_name, args) -> str:
         """Удаление сообщения: .br r [code]"""
@@ -531,7 +511,6 @@ class BroadcastManager:
             return "ℹ️ Чат не найден"
         del code.chats[chat_id]
         await self.save_config()
-        logger.info("➖ [%s] Удален чат %s", code_name, chat_id)
         return f"🐲 -1 чат | Осталось: {sum(len(v) for v in code.chats.values())}"
 
     async def _handle_start(self, message, code, code_name, args) -> str:
@@ -548,13 +527,6 @@ class BroadcastManager:
         )
 
         await self.save_config()
-        logger.info(
-            "🚀 [%s] Старт рассылки | Чаты: %d | Сообщения: %d | Интервал: %d-%d мин",
-            code_name,
-            len(code.chats),
-            len(code.messages),
-            *code.interval,
-        )
 
         return f"🚀 {code_name} запущена | Чатов: {len(code.chats)}"
 
@@ -566,7 +538,6 @@ class BroadcastManager:
         if code_name in self.broadcast_tasks:
             self.broadcast_tasks[code_name].cancel()
         await self.save_config()
-        logger.info("⏹ [%s] Ручная остановка", code_name)
 
         return f"🧊 {code_name} остановлена"
 
@@ -578,7 +549,7 @@ class BroadcastManager:
                 if identifier.startswith(("https://t.me/", "t.me/")):
                     parts = identifier.rstrip("/").split("/")
                     identifier = parts[-1]
-                if identifier.lstrip("-").isdigit():
+                if identifier.replace("-", "").isdigit():
                     return int(identifier)
             await asyncio.sleep(random.uniform(1.5, 5.5))
             entity = await self.client.get_entity(identifier, exp=3600)
@@ -602,7 +573,114 @@ class BroadcastManager:
                     self._broadcast_loop(code_name)
                 )
                 active = sum(1 for code in self.codes.values() if code._active)
-                logger.info("🔁 Перезапуск всех рассылок (%d активных)", active)
+
+    async def _scan_folders_for_chats(self):
+        """Сканирует только папки с именами, оканчивающимися на '💫'"""
+        try:
+            await asyncio.sleep(random.uniform(1.5, 5.5))
+
+            stats = {
+                "processed": 0,
+                "added": 0,
+                "errors": 0,
+            }
+
+            try:
+                folders = await self.client(GetDialogFiltersRequest())
+            except Exception as e:
+                logger.error(f"🚨 Ошибка получения папок: {e}")
+                return "❌ Не удалось получить список папок"
+            for folder in folders:
+                folder_title = getattr(folder, "title", "").strip()
+
+                if not folder_title.lower().endswith("💫"):
+                    continue
+                folder_id = getattr(folder, "id", None)
+                if not folder_id or not isinstance(folder_id, int):
+                    continue
+                stats["processed"] += 1
+
+                try:
+                    if hasattr(folder, "include_peers") and folder.include_peers:
+                        peers = []
+                        for peer in folder.include_peers:
+                            try:
+                                entity = await self.client.get_entity(peer)
+                                peers.append(entity)
+                            except Exception as e:
+                                logger.error(
+                                    f"Не удалось получить сущность для peer {peer}: {e}"
+                                )
+                    added = 0
+                    for peer in peers:
+                        if self._process_peer(peer, folder_title):
+                            added += 1
+                    await self.save_config()
+                    stats["added"] += added
+                except Exception as e:
+                    logger.error(f"🔥 Ошибка: {e}", exc_info=True)
+                    stats["errors"] += 1
+            report = [
+                "📊 Итоги сканирования:",
+                f"• Всего папок: {len(folders)}",
+                f"• Обработано: {stats['processed']}",
+                f"• Добавлено чатов: {stats['added']}",
+                f"• Ошибок: {stats['errors']}",
+            ]
+            return "\n".join(report)
+        except Exception as e:
+            logger.critical(f"💥 Фатальная ошибка: {e}", exc_info=True)
+            return f"🚨 Критическая ошибка: {e}"
+
+    def _process_peer(self, peer, folder_title: str) -> bool:
+        """Обрабатывает отдельный чат/канал, добавляя только группы и устанавливая интервал из названия папки"""
+        try:
+            if hasattr(peer, "broadcast") and peer.broadcast:
+                return False
+            if hasattr(peer, "forum") and peer.forum:
+                return False
+            if hasattr(peer, "__class__") and peer.__class__.__name__ == "Channel":
+                if not getattr(peer, "megagroup", False):
+                    return False
+            folder_parts = folder_title[:-1].strip().lower().split()
+            if not folder_parts:
+                return False
+            code_name = folder_parts[0]
+
+            interval_min = None
+            for part in folder_parts:
+                if part.endswith("m") and part[:-1].isdigit():
+                    interval_min = int(part[:-1])
+                    break
+            if code_name not in self.codes:
+                self.codes[code_name] = Broadcast()
+            if interval_min is not None:
+                interval_max = interval_min + 1
+                self.codes[code_name].interval = (interval_min, interval_max)
+                self.codes[code_name].original_interval = (interval_min, interval_max)
+            original_id = peer.id
+
+            if hasattr(peer, "__class__") and peer.__class__.__name__ == "Channel":
+                chat_id = int(f"-100{original_id}")
+            else:
+                chat_id = original_id
+            if not hasattr(self.codes[code_name], "chats"):
+                self.codes[code_name].chats = defaultdict(set)
+            if (
+                chat_id not in self.codes[code_name].chats
+                or 0 not in self.codes[code_name].chats[chat_id]
+            ):
+                if chat_id not in self.codes[code_name].chats:
+                    self.codes[code_name].chats[chat_id] = set()
+                self.codes[code_name].chats[chat_id].add(0)
+                return True
+            return False
+        except Exception as e:
+            logger.error(
+                f"⚠️ Ошибка обработки чата {getattr(peer, 'id', 'Unknown')}: {e}",
+                exc_info=True,
+            )
+            return False
 
     async def _send_message(
         self, chat_id: int, msg: Message, topic_id: Optional[int] = None
@@ -623,29 +701,34 @@ class BroadcastManager:
             if topic_id is not None and topic_id != 0:
                 forward_args["top_msg_id"] = topic_id
             await self.client.forward_messages(**forward_args)
-            logger.debug(
-                "✅ [%s->%s] Сообщение переслано",
-                msg.chat_id,
-                f"{chat_id}:{topic_id}" if topic_id else chat_id,
-            )
             return True
         except FloodWaitError as e:
             await self._handle_flood_wait(e, chat_id)
             return False
         except SlowModeWaitError as e:
-            logger.warning("⌛ [%d] SlowModeWait %d сек.", chat_id, e.seconds)
+            logger.error("⌛ [%d] SlowModeWait %d сек.", chat_id, e.seconds)
             return False
         except Exception as e:
             logger.error(f"Unexpected error in chat {chat_id}: {repr(e)}")
             await self._handle_permanent_error(chat_id, topic_id)
             return False
 
-    def _toggle_watcher(self, args) -> str:
+    async def _toggle_watcher(self, args) -> str:
         """Переключение авто-добавления: .br w [on/off]"""
         if len(args) < 2:
             return f"🔍 Автодобавление: {'ON' if self.watcher_enabled else 'OFF'}"
-        self.watcher_enabled = args[1].lower() == "on"
-        return f"🐺 Автодобавление: {'ВКЛ' if self.watcher_enabled else 'ВЫКЛ'}"
+        enable = args[1].lower() == "on"
+        self.watcher_enabled = enable
+
+        if enable:
+            try:
+                result = await self._scan_folders_for_chats()
+                return f"🐺 Автодобавление: ВКЛ | Папки просканированы\n\n{result}"
+            except Exception as e:
+                logger.error(f"Ошибка при сканировании папок: {e}", exc_info=True)
+                return f"🐺 Автодобавление: ВКЛ | Ошибка сканирования: {str(e)}"
+        else:
+            return f"🐺 Автодобавление: ВЫКЛ"
 
     async def handle_command(self, message):
         """Обработчик команд управления рассылкой"""
@@ -660,7 +743,8 @@ class BroadcastManager:
             if action == "l":
                 response = await self._generate_stats_report()
             elif action == "w":
-                response = self._toggle_watcher(args)
+                await utils.answer(message, "💫")
+                response = await self._toggle_watcher(args)
             else:
                 code_name = args[1].lower() if len(args) > 1 else None
                 if not code_name:
@@ -699,22 +783,22 @@ class BroadcastManager:
             for code_name, code_data in raw_config.get("codes", {}).items():
                 try:
                     chats = defaultdict(set)
-                    for chat_id_str, topic_ids in code_data.get("chats", {}).items():
-                        chats[int(chat_id_str)] = set(map(int, topic_ids))
+                    for chat_id, topic_ids in code_data.get("chats", {}).items():
+                        chats[int(chat_id)] = set(map(int, topic_ids))
                     last_group_chats = defaultdict(set)
-                    for chat_id_str, topic_ids in code_data.get(
+                    for chat_id, topic_ids in code_data.get(
                         "last_group_chats", {}
                     ).items():
-                        last_group_chats[int(chat_id_str)] = set(map(int, topic_ids))
+                        last_group_chats[int(chat_id)] = set(map(int, topic_ids))
                     code = Broadcast(
                         chats=chats,
                         messages={
                             (int(msg["chat_id"]), int(msg["message_id"]))
                             for msg in code_data.get("messages", [])
                         },
-                        interval=tuple(map(int, code_data.get("interval", (5, 6)))),
+                        interval=tuple(map(int, code_data.get("interval", (10, 11)))),
                         original_interval=tuple(
-                            map(int, code_data.get("original_interval", (5, 6)))
+                            map(int, code_data.get("original_interval", (10, 11)))
                         ),
                         last_group_chats=last_group_chats,
                     )
@@ -731,7 +815,6 @@ class BroadcastManager:
                     continue
             for code_name, code in self.codes.items():
                 if code._active and (not code.messages or not code.chats):
-                    logger.info("Отключение %s: нет сообщений/чатов", code_name)
                     code._active = False
         except Exception as e:
             logger.error(f"Критическая ошибка загрузки: {str(e)}", exc_info=True)
@@ -744,7 +827,7 @@ class BroadcastManager:
                 "codes": {
                     name: {
                         "chats": {
-                            str(chat_id): list(topic_ids)
+                            int(chat_id): list(topic_ids)
                             for chat_id, topic_ids in dict(code.chats).items()
                         },
                         "messages": [
@@ -759,7 +842,7 @@ class BroadcastManager:
                             for group in code.groups
                         ],
                         "last_group_chats": {
-                            str(k): list(v)
+                            int(k): list(v)
                             for k, v in dict(code.last_group_chats).items()
                         },
                     }
@@ -768,9 +851,6 @@ class BroadcastManager:
             }
             try:
                 self.db.set("broadcast", "config", config)
-                logger.debug(
-                    "💾 Сохранение конфигурации (%d рассылок)", len(self.codes)
-                )
             except Exception as e:
                 logger.error(f"Database error during save: {e}")
                 raise
