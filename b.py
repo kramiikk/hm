@@ -1,6 +1,7 @@
 """Author: kramiikk - Telegram: @kramiikk"""
 
 import asyncio
+import html
 import logging
 import random
 import time
@@ -723,15 +724,19 @@ class BroadcastManager:
             send_args = {"entity": chat_id}
             if topic_id not in (None, 0):
                 send_args["reply_to"] = topic_id
+            message_text = html.unescape(msg.text) if msg.text else None
+
             if msg.media and not isinstance(msg.media, MessageMediaWebPage):
                 await self.client.send_file(
                     file=msg.media,
-                    caption=msg.text or None,
+                    caption=message_text,
+                    parse_mode="html",
                     **send_args,
                 )
             else:
                 await self.client.send_message(
-                    message=msg.text,
+                    message=message_text,
+                    parse_mode="html",
                     **send_args,
                 )
             return True
