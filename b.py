@@ -239,41 +239,41 @@ class BroadcastManager:
                     random.shuffle(chats)
                     code.groups = [chats[i : i + 5] for i in range(0, len(chats), 5)]
                     code.last_group_chats = current_chats
-                total_groups = len(code.groups)
-                interval = (
-                    random.uniform(
-                        code.interval[0] * self.global_backoff_multiplier,
-                        code.interval[1] * self.global_backoff_multiplier,
-                    )
-                    * 60
-                )
-
-                if total_groups > 1:
-                    pause_between = (interval - total_groups * 0.2) / (total_groups - 1)
-                else:
-                    pause_between = 0
                 msg_tuple = random.choice(tuple(code.messages))
                 message = await self._fetch_message(*msg_tuple)
                 if not message:
                     code.messages.remove(msg_tuple)
                     await self.save_config()
                     continue
-                start_time = time.monotonic()
+                total_chats = sum(len(v) for v in code.chats.values())
+                cycle_minutes = random.uniform(
+                    code.interval[0] * self.global_backoff_multiplier,
+                    code.interval[1] * self.global_backoff_multiplier,
+                )
+                cycle_seconds = cycle_minutes * 60
 
-                for idx, group in enumerate(code.groups):
+                time_per_chat = cycle_seconds / total_chats
+
+                start_time = time.monotonic()
+                chats_processed = 0
+
+                for group in code.groups:
                     tasks = []
                     for chat_data in group:
                         chat_id, topic_id = chat_data
                         tasks.append(self._send_message(chat_id, message, topic_id))
                     await asyncio.gather(*tasks)
+                    chats_processed += len(group)
 
-                    if idx < total_groups - 1:
-                        await asyncio.sleep(
-                            max(60, pause_between) + random.uniform(15, 30)
-                        )
+                    if chats_processed < total_chats:
+                        target_elapsed = time_per_chat * chats_processed
+                        actual_elapsed = time.monotonic() - start_time
+
+                        if actual_elapsed < target_elapsed:
+                            await asyncio.sleep(target_elapsed - actual_elapsed)
                 elapsed = time.monotonic() - start_time
-                if elapsed < interval:
-                    await asyncio.sleep(interval - elapsed)
+                if elapsed < cycle_seconds:
+                    await asyncio.sleep(cycle_seconds - elapsed)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
