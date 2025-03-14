@@ -621,7 +621,7 @@ class BroadcastManager:
             for folder in folders:
                 folder_title = getattr(folder, "title", "").strip()
 
-                if not folder_title.lower().endswith("💫"):
+                if not folder_title.lower().endswith("$"):
                     continue
                 folder_id = getattr(folder, "id", None)
                 if not folder_id or not isinstance(folder_id, int):
