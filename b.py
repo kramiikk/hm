@@ -611,7 +611,6 @@ class BroadcastManager:
             stats = {
                 "processed": 0,
                 "added": 0,
-                "errors": 0,
             }
 
             try:
@@ -648,13 +647,11 @@ class BroadcastManager:
                     stats["added"] += added
                 except Exception as e:
                     logger.error(f"🔥 Ошибка: {e}", exc_info=True)
-                    stats["errors"] += 1
             report = [
                 "📊 Итоги сканирования:",
                 f"• Всего папок: {len(folders)}",
                 f"• Обработано: {stats['processed']}",
                 f"• Добавлено чатов: {stats['added']}",
-                f"• Ошибок: {stats['errors']}",
             ]
             return "\n".join(report)
         except Exception as e:
