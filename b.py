@@ -604,7 +604,7 @@ class BroadcastManager:
                 active = sum(1 for code in self.codes.values() if code._active)
 
     async def _scan_folders_for_chats(self):
-        """Сканирует только папки с именами, оканчивающимися на '💫'"""
+        """Сканирует только определенные папки"""
         try:
             await asyncio.sleep(random.uniform(1.5, 5.5))
 
