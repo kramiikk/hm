@@ -2,7 +2,7 @@ import logging
 import shlex
 import time
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telethon import types
 from telethon.tl.types import (
     MessageService,
@@ -24,7 +24,7 @@ MAX_CONCURRENT_TASKS = 10
 
 
 def parse_date(date_str: str) -> Optional[datetime]:
-    """Парсит дату в различных форматах"""
+    """Парсит дату в различных форматах и возвращает UTC datetime"""
     formats = [
         "%d.%m.%Y",  # 01.01.2023
         "%d/%m/%Y",  # 01/01/2023
@@ -35,24 +35,28 @@ def parse_date(date_str: str) -> Optional[datetime]:
 
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt)
+            dt = datetime.strptime(date_str, fmt)
+            # Преобразуем в UTC
+
+            return dt.replace(tzinfo=timezone.utc)
         except ValueError:
             continue
     # Попробуем парсить относительные даты
 
     try:
+        now_utc = datetime.now(timezone.utc)
         if date_str.endswith("d") or date_str.endswith("д"):
             days = int(date_str[:-1])
-            return datetime.now() - timedelta(days=days)
+            return now_utc - timedelta(days=days)
         elif date_str.endswith("w") or date_str.endswith("н"):
             weeks = int(date_str[:-1])
-            return datetime.now() - timedelta(weeks=weeks)
+            return now_utc - timedelta(weeks=weeks)
         elif date_str.endswith("m") or date_str.endswith("м"):
             months = int(date_str[:-1])
-            return datetime.now() - timedelta(days=months * 30)
+            return now_utc - timedelta(days=months * 30)
         elif date_str.endswith("y") or date_str.endswith("г"):
             years = int(date_str[:-1])
-            return datetime.now() - timedelta(days=years * 365)
+            return now_utc - timedelta(days=years * 365)
     except ValueError:
         pass
     return None
@@ -206,6 +210,10 @@ class JoinSearchMod(loader.Module):
         self, msg_date: datetime, from_date: datetime, to_date: datetime
     ) -> bool:
         """Проверяет, попадает ли сообщение в заданный диапазон дат"""
+        # Убеждаемся, что msg_date имеет информацию о временной зоне
+
+        if msg_date.tzinfo is None:
+            msg_date = msg_date.replace(tzinfo=timezone.utc)
         if from_date and msg_date < from_date:
             return False
         if to_date and msg_date > to_date:
@@ -393,7 +401,10 @@ class JoinSearchMod(loader.Module):
                     break
                 # Проверяем, не достигли ли мы нижней границы даты
 
-                if parsed_args["from_date"] and msg.date < parsed_args["from_date"]:
+                msg_date_utc = msg.date
+                if msg_date_utc.tzinfo is None:
+                    msg_date_utc = msg_date_utc.replace(tzinfo=timezone.utc)
+                if parsed_args["from_date"] and msg_date_utc < parsed_args["from_date"]:
                     early_stop = True
                     break
                 messages_checked += 1
