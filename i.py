@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LIMIT = 500000
 UPDATE_INTERVAL = 30
-STATUS_CHECK_INTERVAL = 250
+STATUS_CHECK_INTERVAL = (
+    50  # Изменено на 50 для отправки результатов каждые 50 сообщений
+)
 RESULTS_CHUNK_SIZE = 50
 MAX_CONCURRENT_TASKS = 10
 
@@ -83,7 +85,7 @@ class JoinSearchMod(loader.Module):
         "searching": "🔍 <b>Начинаю поиск в группе {}\n\nПараметры поиска:\n• Имя: {}\n• Фамилия: {}\n• Лимит сообщений: {}\n• Точное совпадение: {}\n• Показать всех: {}\n\nТипы проверяемых сообщений:\n• Присоединение по ссылке\n• Добавление пользователем</b>",
         "progress": "🔄 <b>Статус поиска:\n• Проверено сообщений: {}\n• Найдено совпадений: {}\n• Скорость: ~{} сообщ./сек\n• Прошло времени: {} сек.</b>",
         "no_results": "❌ <b>Результаты не найдены\n• Всего проверено: {} сообщений\n• Затраченное время: {} сек.</b>",
-        "results": "✅ <b>Промежуточные результаты поиска в группе {}!\n• Проверено: {}\n• Найдено: {}</b>\n\n{}",
+        "results": "✅ <b>Результаты поиска (сообщения {}-{}):\n• Найдено в этом блоке: {}</b>\n\n{}",
         "final_results": "✅ <b>Поиск завершен в группе {}!\n• Всего проверено: {}\n• Всего найдено: {}\n• Затраченное время: {} сек.</b>",
         "group_not_found": "❌ <b>Группа не найдена</b>",
         "invalid_args": "❌ <b>Неверные аргументы!</b>",
@@ -94,7 +96,6 @@ class JoinSearchMod(loader.Module):
         self.name = self.strings["name"]
         self._running = False
         self._user_cache = {}
-        self._results_buffer = deque(maxlen=RESULTS_CHUNK_SIZE)
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 
     async def client_ready(self, client, db):
@@ -186,7 +187,7 @@ class JoinSearchMod(loader.Module):
         self,
         status_message,
         messages_checked: int,
-        results: List[str],
+        total_results: int,
         start_time: float,
     ) -> None:
         """Обновление статуса поиска"""
@@ -197,13 +198,15 @@ class JoinSearchMod(loader.Module):
 
             await status_message.edit(
                 self.strings["progress"].format(
-                    messages_checked, len(results), round(speed, 1), round(elapsed, 1)
+                    messages_checked, total_results, round(speed, 1), round(elapsed, 1)
                 )
             )
         except Exception as e:
             logger.exception(f"Ошибка при обновлении статуса: {str(e)}")
 
-    async def _process_messages_batch(self, messages, message, target_group, parsed_args):
+    async def _process_messages_batch(
+        self, messages, message, target_group, parsed_args
+    ):
         """Обработка пакета сообщений параллельно"""
         tasks = []
         async with self._semaphore:
@@ -245,16 +248,16 @@ class JoinSearchMod(loader.Module):
         except Exception:
             await utils.answer(message, self.strings["group_not_found"])
             return
-        
         self._running = True
         status_message = None
 
         try:
-            results = []
+            total_results = 0
             messages_checked = 0
             last_progress_time = time.time()
             start_time = last_progress_time
             message_batch = []
+            current_batch_results = []  # Результаты текущего блока из 50 сообщений
 
             status_message = await utils.answer(
                 message,
@@ -268,6 +271,8 @@ class JoinSearchMod(loader.Module):
                 ),
             )
 
+            batch_start = 1  # Номер первого сообщения в текущем блоке
+
             async for msg in message.client.iter_messages(
                 target_group,
                 limit=parsed_args["limit"],
@@ -275,82 +280,96 @@ class JoinSearchMod(loader.Module):
             ):
                 if not self._running:
                     break
-                
                 messages_checked += 1
                 message_batch.append(msg)
+
+                # Обрабатываем сообщения по одному для мгновенной отправки результатов
 
                 if len(message_batch) >= MAX_CONCURRENT_TASKS:
                     batch_results = await self._process_messages_batch(
                         message_batch, message, target_group, parsed_args
                     )
-                    results.extend(batch_results)
-                    for result in batch_results:
-                        self._results_buffer.append(result)
+                    current_batch_results.extend(batch_results)
+                    total_results += len(batch_results)
                     message_batch = []
+                # Отправляем результаты каждые 50 просканированных сообщений
 
-                current_time = time.time()
-                if (
-                    messages_checked % STATUS_CHECK_INTERVAL == 0
-                    and current_time - last_progress_time >= UPDATE_INTERVAL
-                ):
-                    last_progress_time = current_time
-                    await self._update_status(
-                        status_message, messages_checked, results, start_time
-                    )
+                if messages_checked % STATUS_CHECK_INTERVAL == 0:
+                    # Отправляем найденные результаты в этом блоке
 
-                    if len(self._results_buffer) >= RESULTS_CHUNK_SIZE:
+                    if current_batch_results:
                         try:
+                            batch_end = messages_checked
                             await message.respond(
                                 self.strings["results"].format(
-                                    parsed_args["group"],
-                                    messages_checked,
-                                    len(results),
-                                    "\n".join(list(self._results_buffer)),
+                                    batch_start,
+                                    batch_end,
+                                    len(current_batch_results),
+                                    "\n".join(current_batch_results),
                                 )
                             )
-                            self._results_buffer.clear()
                         except Exception as e:
                             logger.exception(
-                                f"Ошибка при отправке промежуточных результатов: {str(e)}"
+                                f"Ошибка при отправке результатов блока: {str(e)}"
                             )
+                    # Сбрасываем результаты текущего блока и обновляем счетчики
 
+                    current_batch_results = []
+                    batch_start = messages_checked + 1
+
+                    # Обновляем статус
+
+                    current_time = time.time()
+                    if current_time - last_progress_time >= UPDATE_INTERVAL:
+                        last_progress_time = current_time
+                        await self._update_status(
+                            status_message, messages_checked, total_results, start_time
+                        )
             # Обработка оставшихся сообщений
+
             if message_batch:
                 batch_results = await self._process_messages_batch(
                     message_batch, message, target_group, parsed_args
                 )
-                results.extend(batch_results)
-                for result in batch_results:
-                    self._results_buffer.append(result)
+                current_batch_results.extend(batch_results)
+                total_results += len(batch_results)
+            # Отправляем последние результаты, если они есть
 
+            if current_batch_results:
+                try:
+                    await message.respond(
+                        self.strings["results"].format(
+                            batch_start,
+                            messages_checked,
+                            len(current_batch_results),
+                            "\n".join(current_batch_results),
+                        )
+                    )
+                except Exception as e:
+                    logger.exception(
+                        f"Ошибка при отправке последних результатов: {str(e)}"
+                    )
             total_time = round(time.time() - start_time, 1)
 
             if not self._running:
                 await utils.answer(
                     status_message,
-                    f"✅ <b>Поиск остановлен!\n• Проверено: {messages_checked}\n• Найдено: {len(results)}\n• Затраченное время: {total_time} сек.</b>",
+                    f"✅ <b>Поиск остановлен!\n• Проверено: {messages_checked}\n• Найдено: {total_results}\n• Затраченное время: {total_time} сек.</b>",
                 )
-            elif not results:
+            elif total_results == 0:
                 await utils.answer(
                     status_message,
                     self.strings["no_results"].format(messages_checked, total_time),
                 )
             else:
-                # Отправка оставшихся результатов
-                if self._results_buffer:
-                    await message.respond(
-                        self.strings["results"].format(
-                            parsed_args["group"],
-                            messages_checked,
-                            len(results),
-                            "\n".join(list(self._results_buffer)),
-                        )
-                    )
-                
-                await message.respond(
+                await utils.answer(
+                    status_message,
                     self.strings["final_results"].format(
-                        parsed_args["group"], messages_checked, len(results), total_time
-                    )
+                        parsed_args["group"],
+                        messages_checked,
+                        total_results,
+                        total_time,
+                    ),
                 )
         except Exception as e:
             error_msg = f"❌ <b>Ошибка:</b>\n{str(e)}"
@@ -361,4 +380,3 @@ class JoinSearchMod(loader.Module):
         finally:
             self._running = False
             self._user_cache.clear()
-            self._results_buffer.clear()
