@@ -362,10 +362,26 @@ class JoinSearchMod(loader.Module):
             current_batch_results = []
             current_message_date = ""
 
-            # Определяем начальную дату для итератора
+            # ИСПРАВЛЕНИЕ: Определяем правильную стратегию поиска
 
-            offset_date = parsed_args["to_date"] if parsed_args["to_date"] else None
+            offset_date = None
+            reverse_search = False
 
+            if parsed_args["to_date"] and parsed_args["from_date"]:
+                # Диапазон дат: начинаем с to_date и идем до from_date
+
+                offset_date = parsed_args["to_date"]
+            elif parsed_args["to_date"] and not parsed_args["from_date"]:
+                # Только верхняя граница: начинаем с to_date
+
+                offset_date = parsed_args["to_date"]
+            elif parsed_args["from_date"] and not parsed_args["to_date"]:
+                # Только нижняя граница: начинаем немного после from_date и ищем в обратном порядке
+                # Добавляем небольшой буфер (например, 1 день) к from_date
+
+                search_start = parsed_args["from_date"] + timedelta(days=1)
+                offset_date = search_start
+                reverse_search = True
             status_message = await utils.answer(
                 message,
                 self.strings["searching"].format(
@@ -391,22 +407,42 @@ class JoinSearchMod(loader.Module):
             batch_start = 1
             early_stop = False
 
-            async for msg in message.client.iter_messages(
-                target_group,
-                limit=parsed_args["limit"],
-                filter=types.InputMessagesFilterEmpty(),
-                offset_date=offset_date,
-            ):
+            # Используем правильную стратегию поиска в зависимости от параметров
+
+            iter_params = {
+                "limit": parsed_args["limit"],
+                "filter": types.InputMessagesFilterEmpty(),
+            }
+
+            if offset_date:
+                iter_params["offset_date"] = offset_date
+            if reverse_search:
+                # Для обратного поиска используем reverse=True
+
+                iter_params["reverse"] = True
+            async for msg in message.client.iter_messages(target_group, **iter_params):
                 if not self._running:
                     break
-                # Проверяем, не достигли ли мы нижней границы даты
+                # ИСПРАВЛЕНИЕ: Адаптивная проверка границ в зависимости от направления поиска
 
                 msg_date_utc = msg.date
                 if msg_date_utc.tzinfo is None:
                     msg_date_utc = msg_date_utc.replace(tzinfo=timezone.utc)
-                if parsed_args["from_date"] and msg_date_utc < parsed_args["from_date"]:
-                    early_stop = True
-                    break
+                if reverse_search:
+                    # При обратном поиске (от старых к новым) останавливаемся при достижении to_date
+
+                    if parsed_args["to_date"] and msg_date_utc > parsed_args["to_date"]:
+                        early_stop = True
+                        break
+                else:
+                    # При обычном поиске (от новых к старым) останавливаемся при достижении from_date
+
+                    if (
+                        parsed_args["from_date"]
+                        and msg_date_utc < parsed_args["from_date"]
+                    ):
+                        early_stop = True
+                        break
                 messages_checked += 1
                 current_message_date = msg.date.strftime("%d.%m.%Y %H:%M")
                 message_batch.append(msg)
